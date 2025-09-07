@@ -1,5 +1,8 @@
 // Frankenphone Lab — Break-beam → Magnet (Adafruit STEMMA MOSFET) + Passive Buzzer (Dial-up Modem) + State LEDs
 // Board: Arduino Mega 2560
+#include <stdio.h>
+#include "stdint.h"
+#include <Arduino.h>
 
 // Pins
 const uint8_t PIN_BEAM        = 3;   // Break-beam: intact=HIGH, broken=LOW (INPUT_PULLUP)
