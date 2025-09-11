@@ -110,6 +110,77 @@ void console_update(){
         else Serial.println(F("ERR STATE IDLE|HOLD|COOLDOWN"));
         return;
       }
+            if (uc == "SAVE"){
+        // We can’t include settings.hpp here without a circular dep,
+        // so expose thin shims in main OR call a function pointer.
+        // Easiest: we’ll have main attach a PrintFn that prints settings,
+        // and we just invoke a global weak function. Simpler solution:
+        extern void settings_save();  // forward from settings.cpp linkage
+        settings_save();
+        Serial.println(F("OK SAVE"));
+        return;
+      }
+
+      if (uc == "LOAD"){
+        extern bool settings_load();
+        if (settings_load()){
+          Serial.println(F("OK LOAD"));
+        } else {
+          Serial.println(F("ERR LOAD (invalid EEPROM)"));
+        }
+        return;
+      }
+            if (uc.startsWith("SDEB ")){ // SDEB <ms>
+        String arg = uc.substring(5); arg.trim();
+        long v = strtol(arg.c_str(), nullptr, 10);
+        if (v >= 0 && v <= 2000){
+          extern void settings_set_debounce(uint16_t);
+          settings_set_debounce((uint16_t)v);
+          Serial.println(F("OK SDEB"));
+        } else Serial.println(F("ERR SDEB <0..2000>"));
+        return;
+      }
+
+      if (uc.startsWith("SREARM ")){ // SREARM <ms>
+        String arg = uc.substring(7); arg.trim();
+        long v = strtol(arg.c_str(), nullptr, 10);
+        if (v >= 0 && v <= 600000){
+          extern void settings_set_rearm(uint32_t);
+          settings_set_rearm((uint32_t)v);
+          Serial.println(F("OK SREARM"));
+        } else Serial.println(F("ERR SREARM <0..600000>"));
+        return;
+      }
+            if (uc == "MAP"){
+        if (cbPrint) cbPrint();     // reuse your existing printer from main.cpp
+        Serial.println(F("OK MAP"));
+        return;
+      }
+            // SCENE <name>  (name is case-insensitive; examples below)
+      if (uc.startsWith("SCENE ")){
+        String arg = uc.substring(6); arg.trim();  // uppercase already
+        int code = -1;
+
+        // Map scene NAME -> integer code (these codes are implemented in main.cpp::forceState)
+        if      (arg == "STANDBY")       code = 0;
+        else if (arg == "PHONELOADING")  code = 10;
+        else if (arg == "INTRO" || arg == "INTRO CUE" || arg == "INTROcue" || arg == "INTRO_CUE" || arg == "INTROCUe" || arg == "INTRO_CUE") code = 11;
+        else if (arg == "BLOOD" || arg == "BLOODROOM" || arg == "BLOOD_ROOM") code = 12;
+        else if (arg == "GRAVE" || arg == "GRAVEYARD") code = 13;
+        else if (arg == "FUR" || arg == "FURROOM" || arg == "FUR_ROOM") code = 14;
+        else if (arg == "ORCA" || arg == "ORCADINO" || arg == "ORCA_DINO") code = 15;
+        else if (arg == "LAB" || arg == "FRANKENLAB" || arg == "FRANKENPHONES" || arg == "FRANKENPHONES LAB") code = 16;
+        else if (arg == "MIRROR" || arg == "MIRRORROOM" || arg == "MIRROR_ROOM") code = 17;
+        else if (arg == "EXIT" || arg == "EXITHOLE" || arg == "EXIT_HOLE") code = 18;
+
+        if (code >= 0){
+          if (cbForce) cbForce(code);
+          Serial.println(F("OK SCENE"));
+        } else {
+          Serial.println(F("ERR SCENE name unknown. Try: STANDBY, PHONELOADING, INTRO, BLOODROOM, GRAVEYARD, FURROOM, ORCADINO, FRANKENLAB, MIRRORROOM, EXITHOLE"));
+        }
+        return;
+      }
 
       Serial.println(F("ERR ? for help"));
     } else if (c != '\r'){

@@ -2,126 +2,143 @@
 #include "display.hpp"
 #include "effects.hpp"
 #include "console.hpp"
+#include "scenes.hpp"
+#include "inputs.hpp"
+#include "settings.hpp"
 
-// --- Pin assignments (adjust if yours differ) ---
-const uint8_t PIN_BEAM        = 3;   // Break-beam input (receiver output)
-const uint8_t PIN_MAGNET_CTRL = 6;   // MOSFET signal to electromagnet
-const uint8_t PIN_BUZZER      = 8;   // Passive buzzer
-const uint8_t LED_ARMED       = 10;  // Green
-const uint8_t LED_HOLD        = 11;  // Red
-const uint8_t LED_COOLDOWN    = 12;  // Yellow
+// =======================
+// Pin assignments (outputs)
+// =======================
+const uint8_t PIN_MAGNET_CTRL = 6;   // MOSFET gate -> electromagnet
+const uint8_t PIN_BUZZER      = 8;   // Passive buzzer (+); (-) to GND
+const uint8_t LED_ARMED       = 10;  // Green indicator
+const uint8_t LED_HOLD        = 11;  // Red indicator
+const uint8_t LED_COOLDOWN    = 12;  // Yellow indicator
 
-// --- Timings ---
-unsigned long HOLD_MS = 5000;                // magnet + modem
-unsigned long COOLDOWN_MS = 20000;           // display flash + lockout
+// =======================
+// Break-beam runtime tables (filled from EEPROM/defaults on boot)
+// =======================
+uint8_t BEAM_PINS[6];   // digital pins for 6 receivers (LOW=broken)
+Scene   BEAM_SCENE[6];  // scene per beam index
 
-// --- State machine ---
-enum RunState { IDLE, HOLD, COOLDOWN };
-RunState state = IDLE;
-unsigned long tStateStart = 0;
+// =======================
+// Console callback helpers
+// (route changes into settings so EEPROM stays in sync)
+// =======================
+static void setHold(uint32_t ms){ settings_set_hold(ms); }
+static void setCool(uint32_t ms){ settings_set_cool(ms); }
+static void setBright(uint8_t b){ settings_set_brightness(b); }
 
-// ---------- Console callback implementations (placed BEFORE setup) ----------
-static void setHold(uint32_t ms){
-  HOLD_MS = ms;
-  effects_setHoldMs(HOLD_MS);
-  Serial.print(F("HOLD_MS = ")); Serial.println(HOLD_MS);
-}
-static void setCool(uint32_t ms){
-  COOLDOWN_MS = ms;
-  Serial.print(F("COOLDOWN_MS = ")); Serial.println(COOLDOWN_MS);
-}
-static void setBright(uint8_t b){
-  display_set_brightness(b);
-  Serial.print(F("BRIGHT = ")); Serial.println((int)b);
-}
 static void printStatus(){
   Serial.println(F("\n--- STATUS ---"));
-  Serial.print(F("State: "));
-  Serial.println(state==IDLE?"IDLE":state==HOLD?"HOLD":"COOLDOWN");
-  Serial.print(F("HOLD_MS=")); Serial.println(HOLD_MS);
-  Serial.print(F("COOLDOWN_MS=")); Serial.println(COOLDOWN_MS);
-  Serial.println(F("Pins: beam=3, magnet=6, buzzer=8, green=10, red=11, yellow=12"));
+  Serial.print(F("Scene: ")); Serial.println(scenes_name(scenes_current()));
+
+  auto& S = settings_ref();
+  Serial.print(F("HOLD_MS="));     Serial.println(S.hold_ms);
+  Serial.print(F("COOLDOWN_MS=")); Serial.println(S.cooldown_ms);
+  Serial.print(F("DEBOUNCE_MS=")); Serial.println(S.debounce_ms);
+  Serial.print(F("REARM_MS="));    Serial.println(S.rearm_ms);
+  Serial.print(F("BRIGHT="));      Serial.println(S.brightness);
+
+  Serial.println(F("Beam map (idx : pin -> scene):"));
+  for (uint8_t i=0;i<6;i++){
+    Serial.print(F("  ")); Serial.print(i);
+    Serial.print(F(" : ")); Serial.print(BEAM_PINS[i]);
+    Serial.print(F(" -> ")); Serial.println(scenes_name(BEAM_SCENE[i]));
+  }
+
+  inputs_printStatus(Serial);
   Serial.println(F("--------------\n"));
 }
+
+// Extendable mapping for STATE/SCENE console quick-jumps
 static void forceState(int st){
-  unsigned long now = millis();
   switch(st){
-    case 0: // IDLE
-      state = IDLE;
-      display_idle("OBEY");
-      effects_magnet_off();
-      effects_sound_stop();
-      break;
-    case 1: // HOLD
-      state = HOLD;
-      tStateStart = now;
-      effects_magnet_on();
-      display_hold_init();
-      break;
-    case 2: // COOLDOWN
-      state = COOLDOWN;
-      tStateStart = now;
-      effects_magnet_off();
-      effects_sound_stop();
-      display_cooldown_init();
-      break;
+    case 0:  scenes_set(Scene::Standby);      break;
+    case 1:  scenes_set(Scene::FrankenLab);   break;
+    case 2:  scenes_set(Scene::MirrorRoom);   break;
+
+    case 10: scenes_set(Scene::PhoneLoading); break;
+    case 11: scenes_set(Scene::IntroCue);     break;
+    case 12: scenes_set(Scene::BloodRoom);    break;
+    case 13: scenes_set(Scene::Graveyard);    break;
+    case 14: scenes_set(Scene::FurRoom);      break;
+    case 15: scenes_set(Scene::OrcaDino);     break;
+    case 16: scenes_set(Scene::FrankenLab);   break;
+    case 17: scenes_set(Scene::MirrorRoom);   break;
+    case 18: scenes_set(Scene::ExitHole);     break;
+    default: /* ignore */                     break;
   }
 }
-// ---------------------------------------------------------------------------
 
-void setup() {
-  pinMode(PIN_BEAM, INPUT_PULLUP);           // LOW = broken (flip if opposite)
+// Helper: convert persisted scene code (uint8_t) -> enum Scene
+static Scene codeToScene(uint8_t c){
+  switch(c){
+    case 0:  return Scene::Standby;
+    case 1:  return Scene::IntroCue;
+    case 2:  return Scene::BloodRoom;
+    case 3:  return Scene::Graveyard;
+    case 4:  return Scene::FurRoom;
+    case 5:  return Scene::OrcaDino;
+    case 6:  return Scene::FrankenLab;
+    case 7:  return Scene::MirrorRoom;
+    case 8:  return Scene::ExitHole;
+    case 9:  return Scene::PhoneLoading;
+    default: return Scene::Standby;
+  }
+}
+
+void setup(){
+  // Seed RNG (harmless without sensor on A0)
   randomSeed(analogRead(A0));
 
-  display_begin(0x70, 8);
+  // Display first (so brightness applies cleanly)
+  display_begin(0x70, 8);     // I2C addr, brightness 0..15
   display_idle("OBEY");
 
-  effects_begin(LED_ARMED, LED_HOLD, LED_COOLDOWN, PIN_BUZZER, PIN_MAGNET_CTRL, HOLD_MS);
+  // Settings: load from EEPROM (or defaults) and "apply" to subsystems
+  settings_begin(
+    /*applyHold*/      [](uint32_t v){ effects_setHoldMs(v); },
+    /*applyCooldown*/  [](uint32_t v){ (void)v; /* scenes can read settings_ref() */ },
+    /*applyDebounce*/  [](uint16_t v){ inputs_setDebounce(v); },
+    /*applyRearm*/     [](uint32_t v){ inputs_setRearm(v); },
+    /*applyBrightness*/[](uint8_t b){ display_set_brightness(b); }
+  );
 
+  // Copy persisted mapping into runtime arrays
+  auto& S = settings_ref();
+  for (uint8_t i=0;i<6;i++){
+    BEAM_PINS[i]  = S.beam_pins[i];
+    BEAM_SCENE[i] = codeToScene(S.beam_scene[i]);
+  }
+
+  // Effects/Inputs after settings have been applied
+  effects_begin(LED_ARMED, LED_HOLD, LED_COOLDOWN, PIN_BUZZER, PIN_MAGNET_CTRL, S.hold_ms);
+  inputs_begin(BEAM_PINS, S.debounce_ms, S.rearm_ms);
+
+  // Start state machine
+  scenes_begin();
+
+  // Serial console
   console_begin(115200);
   console_attach(setHold, setCool, setBright, forceState, printStatus);
 }
 
-void loop() {
-  console_update();   // read serial commands
+void loop(){
+  // Always keep console responsive
+  console_update();
 
-  bool beamBroken = (digitalRead(PIN_BEAM) == LOW);
-  unsigned long now = millis();
+  // Sensors + scene logic
+  inputs_update();
+  scenes_update();
 
-  switch (state) {
-    case IDLE:
-      effects_idle_update();
-      if (beamBroken) {
-        state = HOLD;
-        tStateStart = now;
-        effects_magnet_on();
-        display_hold_init();
-      }
+  // If any beam fires, jump to its mapped scene (one per tick)
+  for (uint8_t i=0; i<6; i++){
+    if (inputs_triggered(i)){
+      scenes_set(BEAM_SCENE[i]);
       break;
-
-    case HOLD: {
-      unsigned long elapsed = now - tStateStart;
-      effects_hold_update(elapsed);
-      display_hold_update();
-      if (elapsed >= HOLD_MS) {
-        state = COOLDOWN;
-        tStateStart = now;
-        effects_magnet_off();
-        effects_sound_stop();
-        display_cooldown_init();
-      }
-    } break;
-
-    case COOLDOWN:
-      effects_cooldown_update();
-      display_cooldown_update();
-      display_hold_update(); // finish PIN/ZIP if still running
-      if (now - tStateStart >= COOLDOWN_MS) {
-        state = IDLE;
-        display_idle("OBEY");
-      }
-      break;
+    }
   }
 
-  delay(2); // small tick
+  delay(2); // light scheduler tick
 }
