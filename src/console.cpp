@@ -11,6 +11,14 @@ static void (*cbSetBright)(uint8_t)  = nullptr;
 static void (*cbForce)(int)          = nullptr;
 static void (*cbPrint)()             = nullptr;
 
+// === Device hooks (wired by console_attach_devices in main.cpp) ===
+static void (*cbGoProOn)()         = nullptr;
+static void (*cbGoProOff)()        = nullptr;
+static void (*cbGoProMs)(uint32_t) = nullptr;
+static void (*cbAudioOn)()         = nullptr;
+static void (*cbAudioOff)()        = nullptr;
+static void (*cbAudioMs)(uint32_t) = nullptr;
+
 // === Serial config ===
 static unsigned long g_baud = 115200;
 static String g_line;
@@ -66,6 +74,22 @@ void console_attach(void (*setHold)(uint32_t),
   cbPrint     = printStatus;
 }
 
+void console_attach_devices(
+  void (*gopro_on)(),
+  void (*gopro_off)(),
+  void (*gopro_ms)(uint32_t),
+  void (*audio_on)(),
+  void (*audio_off)(),
+  void (*audio_ms)(uint32_t)
+){
+  cbGoProOn  = gopro_on;
+  cbGoProOff = gopro_off;
+  cbGoProMs  = gopro_ms;
+  cbAudioOn  = audio_on;
+  cbAudioOff = audio_off;
+  cbAudioMs  = audio_ms;
+}
+
 static void printHelp(){
   Serial.println(F("Commands:"));
   Serial.println(F("  ? or HELP             - show this help"));
@@ -84,6 +108,10 @@ static void printHelp(){
   Serial.println(F("  BMAP <idx> <pin>      - set beam index->Arduino pin"));
   Serial.println(F("  BSCENE <idx> <name|code> - set beam index->scene"));
   Serial.println(F("  LOG ON|OFF            - toggle event logging"));
+  Serial.println(F("  GOPRO ON|OFF          - power GoPro (USB 5V)"));
+  Serial.println(F("  GOPRO <ms>            - record GoPro for duration"));
+  Serial.println(F("  AUDIO ON|OFF          - power Tascam recorder (USB 5V)"));
+  Serial.println(F("  AUDIO <ms>            - record Audio for duration"));
 }
 
 void console_update(){
@@ -226,6 +254,26 @@ void console_update(){
       settings_set_beam_scene((uint8_t)idx, (uint8_t)code);
       apply_mapping_from_settings();
       Serial.println(F("OK BSCENE"));
+      continue;
+    }
+
+    // GOPRO commands
+    if (uc == "GOPRO ON"){ if (cbGoProOn) cbGoProOn(); Serial.println(F("OK GOPRO ON")); continue; }
+    if (uc == "GOPRO OFF"){ if (cbGoProOff) cbGoProOff(); Serial.println(F("OK GOPRO OFF")); continue; }
+    if (uc.startsWith("GOPRO ")){
+      bool ok=false; long v = parseLong(line.substring(6), ok);
+      if (ok && v > 0){ if (cbGoProMs) cbGoProMs((uint32_t)v); Serial.println(F("OK GOPRO ms")); }
+      else Serial.println(F("ERR GOPRO <ms>"));
+      continue;
+    }
+
+    // AUDIO commands
+    if (uc == "AUDIO ON"){ if (cbAudioOn) cbAudioOn(); Serial.println(F("OK AUDIO ON")); continue; }
+    if (uc == "AUDIO OFF"){ if (cbAudioOff) cbAudioOff(); Serial.println(F("OK AUDIO OFF")); continue; }
+    if (uc.startsWith("AUDIO ")){
+      bool ok=false; long v = parseLong(line.substring(6), ok);
+      if (ok && v > 0){ if (cbAudioMs) cbAudioMs((uint32_t)v); Serial.println(F("OK AUDIO ms")); }
+      else Serial.println(F("ERR AUDIO <ms>"));
       continue;
     }
 
