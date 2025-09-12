@@ -1,12 +1,13 @@
 #include "settings.hpp"
 #include <EEPROM.h>
-#include <string.h> // for memcpy
+#include <string.h> // memcpy
 
 // -------------------------------------------------------------------
-// EEPROM layout: [MAGIC(2)][VERSION(1)][HHSettings struct][CRC16(2)]
+// EEPROM layout: [MAGIC(2)][EEP_VER(1)][HHSettings struct][CRC16(2)]
 // -------------------------------------------------------------------
-static const uint16_t MAGIC   = 0x4848; // 'HH'
-static const uint8_t  VERSION = 2;      // bump when HHSettings changes
+static const uint16_t MAGIC       = 0x4848; // 'HH'
+static const uint8_t  EEP_VERSION = 2;      // bump when HHSettings changes
+static const uint8_t  FW_VERSION  = 1;      // bump when firmware changes meaningfully
 
 // In-RAM copy
 static HHSettings G;
@@ -39,6 +40,27 @@ static void applyAll(){
   if (cbBright) cbBright(G.brightness);
 }
 
+// Defaults (single source of truth)
+static void loadDefaults(HHSettings& S){
+  S.hold_ms     = 5000;
+  S.cooldown_ms = 20000;
+  S.debounce_ms = 30;
+  S.rearm_ms    = 20000;
+  S.brightness  = 8;
+
+  const uint8_t defaultPins[6]  = {2,3,4,5,7,9};
+  const uint8_t defaultScene[6] = {
+    1, // IntroCue
+    2, // BloodRoom
+    3, // Graveyard
+    4, // FurRoom
+    6, // FrankenLab
+    7  // MirrorRoom
+  };
+  memcpy(S.beam_pins,  defaultPins,  sizeof(S.beam_pins));
+  memcpy(S.beam_scene, defaultScene, sizeof(S.beam_scene));
+}
+
 // ---------------- Public API ----------------
 void settings_begin(ApplyU32 applyHold,
                     ApplyU32 applyCooldown,
@@ -52,25 +74,8 @@ void settings_begin(ApplyU32 applyHold,
   cbRearm  = applyRearm;
   cbBright = applyBrightness;
 
-  // Defaults (safe baseline)
-  G.hold_ms     = 5000;
-  G.cooldown_ms = 20000;
-  G.debounce_ms = 30;
-  G.rearm_ms    = 20000;
-  G.brightness  = 8;
-
-  // Default beam pins and scenes (codes; mapped to enum in main.cpp)
-  const uint8_t defaultPins[6]  = {2,3,4,5,7,9};
-  const uint8_t defaultScene[6] = {
-    1, // IntroCue
-    2, // BloodRoom
-    3, // Graveyard
-    4, // FurRoom
-    6, // FrankenLab
-    7  // MirrorRoom
-  };
-  memcpy(G.beam_pins,  defaultPins,  sizeof(G.beam_pins));
-  memcpy(G.beam_scene, defaultScene, sizeof(G.beam_scene));
+  // Defaults first
+  loadDefaults(G);
 
   // Try auto-load from EEPROM; if invalid, keep defaults
   if (!settings_load()){
@@ -82,9 +87,9 @@ void settings_save(){
   const int base = 0;
   int addr = base;
 
-  EEPROM.put(addr, MAGIC);   addr += sizeof(MAGIC);
-  EEPROM.put(addr, VERSION); addr += sizeof(VERSION);
-  EEPROM.put(addr, G);       addr += sizeof(G);
+  EEPROM.put(addr, MAGIC);       addr += sizeof(MAGIC);
+  EEPROM.put(addr, EEP_VERSION); addr += sizeof(EEP_VERSION);
+  EEPROM.put(addr, G);           addr += sizeof(G);
 
   const uint16_t c = crc16(reinterpret_cast<const uint8_t*>(&G), sizeof(G));
   EEPROM.put(addr, c);
@@ -100,7 +105,7 @@ bool settings_load(){
   EEPROM.get(addr, tmp);  addr += sizeof(tmp);
   EEPROM.get(addr, c);
 
-  if (mg != MAGIC || ver != VERSION) return false;
+  if (mg != MAGIC || ver != EEP_VERSION) return false;
 
   const uint16_t expect = crc16(reinterpret_cast<const uint8_t*>(&tmp), sizeof(tmp));
   if (expect != c) return false;
@@ -108,6 +113,16 @@ bool settings_load(){
   G = tmp;
   applyAll();
   return true;
+}
+
+void settings_reset_defaults(bool save){
+  loadDefaults(G);
+  applyAll();
+  if (save) settings_save();
+}
+
+void settings_versions(uint16_t &magic, uint8_t &eepromVer, uint8_t &fwVer){
+  magic = MAGIC; eepromVer = EEP_VERSION; fwVer = FW_VERSION;
 }
 
 HHSettings& settings_ref(){ return G; }
