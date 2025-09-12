@@ -6,6 +6,19 @@
 #include "inputs.hpp"
 #include "settings.hpp"
 
+// Re-apply mapping from EEPROM-backed settings and re-init inputs
+void apply_mapping_from_settings(){
+  auto& S = settings_ref();
+  for (uint8_t i=0;i<6;i++){
+    BEAM_PINS[i]  = S.beam_pins[i];
+    // reuse codeToScene() you already have:
+    extern Scene codeToScene(uint8_t c); // forward if needed, or move codeToScene above
+    BEAM_SCENE[i] = codeToScene(S.beam_scene[i]);
+  }
+  // Re-initialize inputs with new pins/timings
+  inputs_begin(BEAM_PINS, S.debounce_ms, S.rearm_ms);
+}
+
 // =======================
 // Pin assignments (outputs)
 // =======================
