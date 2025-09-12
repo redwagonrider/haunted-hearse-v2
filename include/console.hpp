@@ -36,6 +36,16 @@ void console_attach(
   void (*printStatus)()
 );
 
+// NEW: attach recorder/gopro hooks (call in main.cpp)
+void console_attach_devices(
+  void (*gopro_on)(),
+  void (*gopro_off)(),
+  void (*gopro_ms)(uint32_t),
+  void (*audio_on)(),
+  void (*audio_off)(),
+  void (*audio_ms)(uint32_t)
+);
+
 // Call every loop() to process serial input
 void console_update();
 
