@@ -11,10 +11,12 @@
 //   HOLD <ms>, COOL <ms>, BRIGHT <0..15>
 //   SDEB <ms>, SREARM <ms>
 //   SAVE, LOAD
+//   VER                     (NEW) print versions
+//   RESET                   (NEW) factory reset settings + mapping
 //   STATE <code>, SCENE <name>
-//   BMAP <idx> <pin>         (NEW) beam index -> Arduino pin
-//   BSCENE <idx> <name|code> (NEW) beam index -> scene
-//   LOG ON|OFF               (NEW) enable event logging
+//   BMAP <idx> <pin>        set beam index -> Arduino pin
+//   BSCENE <idx> <name|code> set beam index -> scene
+//   LOG ON|OFF              toggle event logging
 // ============================================================
 
 // Initialize the console at a given baud rate
@@ -37,5 +39,5 @@ void console_attach(
 // Call every loop() to process serial input
 void console_update();
 
-// NEW: logging flag getter for main.cpp
+// Logging flag getter for main.cpp
 bool console_should_log();
