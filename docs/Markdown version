@@ -1,0 +1,74 @@
+# Haunted Hearse Console Quick Reference
+
+Serial Monitor @ **115200 baud** (case-insensitive)
+
+---
+
+## Help & Status
+- `?` or `HELP` — show all commands 
+- `CFG` — print current settings + sensor states 
+- `MAP` — print beam → scene mapping 
+
+---
+
+## Timing / Settings
+- `HOLD <ms>` — set FrankenLab hold duration 
+  *Example:* `HOLD 7000` 
+- `COOL <ms>` — set cooldown/lockout duration 
+  *Example:* `COOL 20000` 
+- `BRIGHT <0..15>` — set display brightness 
+  *Example:* `BRIGHT 12` 
+
+- `SDEB <ms>` — set beam debounce time (0–2000 ms) 
+- `SREARM <ms>` — set beam re-arm time (0–600000 ms) 
+
+---
+
+## EEPROM Persistence
+- `SAVE` — save settings to EEPROM 
+- `LOAD` — load settings from EEPROM 
+
+> 💡 Settings auto-load after power cycle if valid.
+
+---
+
+## Forcing States & Scenes
+
+### By code
+- `STATE <code>` 
+  - 0 = Standby 
+  - 1 = FrankenLab 
+  - 2 = MirrorRoom 
+  - 10 = PhoneLoading 
+  - 11 = IntroCue 
+  - 12 = BloodRoom 
+  - 13 = Graveyard 
+  - 14 = FurRoom 
+  - 15 = OrcaDino 
+  - 16 = FrankenLab 
+  - 17 = MirrorRoom 
+  - 18 = ExitHole 
+
+### By name
+- `SCENE <name>` 
+  Examples: 
+  - `SCENE STANDBY` 
+  - `SCENE BLOODROOM` 
+  - `SCENE GRAVEYARD` 
+  - `SCENE FURROOM` 
+  - `SCENE FRANKENLAB` 
+  - `SCENE MIRRORROOM` 
+  - `SCENE EXITHOLE` 
+
+Aliases also work: `INTRO`, `LAB`, `EXIT`, etc.
+
+---
+
+## Workflow Example
+```text
+CFG
+HOLD 6000
+BRIGHT 10
+SAVE
+SCENE FRANKENLAB
+MAP
