@@ -71,6 +71,14 @@ void apply_mapping_from_settings(){
 static void setHold(uint32_t ms){ settings_set_hold(ms); }
 static void setCool(uint32_t ms){ settings_set_cool(ms); }
 static void setBright(uint8_t b){ settings_set_brightness(b); }
+// Device control helpers
+static void gopro_on()  { gopro_power(true); }
+static void gopro_off() { gopro_power(false); }
+static void gopro_ms(uint32_t ms) { gopro_record_for(ms); }
+
+static void audio_on()  { recorder_power(true); }
+static void audio_off() { recorder_power(false); }
+static void audio_ms(uint32_t ms) { recorder_record_for(ms); }
 
 static void printStatus(){
   Serial.println(F("\n--- STATUS ---"));
@@ -156,6 +164,8 @@ void setup(){
   // Serial console
   console_begin(115200);
   console_attach(setHold, setCool, setBright, forceState, printStatus);
+console_attach_devices(gopro_on, gopro_off, gopro_ms,
+                       audio_on, audio_off, audio_ms);
 }
 
 void loop(){
