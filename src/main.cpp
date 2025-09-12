@@ -6,19 +6,6 @@
 #include "inputs.hpp"
 #include "settings.hpp"
 
-// Re-apply mapping from EEPROM-backed settings and re-init inputs
-void apply_mapping_from_settings(){
-  auto& S = settings_ref();
-  for (uint8_t i=0;i<6;i++){
-    BEAM_PINS[i]  = S.beam_pins[i];
-    // reuse codeToScene() you already have:
-    extern Scene codeToScene(uint8_t c); // forward if needed, or move codeToScene above
-    BEAM_SCENE[i] = codeToScene(S.beam_scene[i]);
-  }
-  // Re-initialize inputs with new pins/timings
-  inputs_begin(BEAM_PINS, S.debounce_ms, S.rearm_ms);
-}
-
 // =======================
 // Pin assignments (outputs)
 // =======================
@@ -33,6 +20,39 @@ const uint8_t LED_COOLDOWN    = 12;  // Yellow indicator
 // =======================
 uint8_t BEAM_PINS[6];   // digital pins for 6 receivers (LOW=broken)
 Scene   BEAM_SCENE[6];  // scene per beam index
+
+// ------------------------------------------------------------------
+// Helper: convert persisted scene code (uint8_t) -> enum Scene
+// (Placed BEFORE any use so we don't need extern)
+// ------------------------------------------------------------------
+static Scene codeToScene(uint8_t c){
+  switch(c){
+    case 0:  return Scene::Standby;
+    case 1:  return Scene::IntroCue;
+    case 2:  return Scene::BloodRoom;
+    case 3:  return Scene::Graveyard;
+    case 4:  return Scene::FurRoom;
+    case 5:  return Scene::OrcaDino;
+    case 6:  return Scene::FrankenLab;
+    case 7:  return Scene::MirrorRoom;
+    case 8:  return Scene::ExitHole;
+    case 9:  return Scene::PhoneLoading;
+    default: return Scene::Standby;
+  }
+}
+
+// ------------------------------------------------------------------
+// Re-apply mapping from EEPROM-backed settings and re-init inputs
+// (Console calls this after BMAP/BSCENE edits.)
+// ------------------------------------------------------------------
+void apply_mapping_from_settings(){
+  auto& S = settings_ref();
+  for (uint8_t i=0;i<6;i++){
+    BEAM_PINS[i]  = S.beam_pins[i];
+    BEAM_SCENE[i] = codeToScene(S.beam_scene[i]);
+  }
+  inputs_begin(BEAM_PINS, S.debounce_ms, S.rearm_ms);
+}
 
 // =======================
 // Console callback helpers
@@ -84,23 +104,6 @@ static void forceState(int st){
   }
 }
 
-// Helper: convert persisted scene code (uint8_t) -> enum Scene
-static Scene codeToScene(uint8_t c){
-  switch(c){
-    case 0:  return Scene::Standby;
-    case 1:  return Scene::IntroCue;
-    case 2:  return Scene::BloodRoom;
-    case 3:  return Scene::Graveyard;
-    case 4:  return Scene::FurRoom;
-    case 5:  return Scene::OrcaDino;
-    case 6:  return Scene::FrankenLab;
-    case 7:  return Scene::MirrorRoom;
-    case 8:  return Scene::ExitHole;
-    case 9:  return Scene::PhoneLoading;
-    default: return Scene::Standby;
-  }
-}
-
 void setup(){
   // Seed RNG (harmless without sensor on A0)
   randomSeed(analogRead(A0));
@@ -118,16 +121,12 @@ void setup(){
     /*applyBrightness*/[](uint8_t b){ display_set_brightness(b); }
   );
 
-  // Copy persisted mapping into runtime arrays
-  auto& S = settings_ref();
-  for (uint8_t i=0;i<6;i++){
-    BEAM_PINS[i]  = S.beam_pins[i];
-    BEAM_SCENE[i] = codeToScene(S.beam_scene[i]);
-  }
+  // Copy persisted mapping into runtime arrays and init inputs
+  apply_mapping_from_settings();
 
-  // Effects/Inputs after settings have been applied
+  // Effects after settings have been applied
+  auto& S = settings_ref();
   effects_begin(LED_ARMED, LED_HOLD, LED_COOLDOWN, PIN_BUZZER, PIN_MAGNET_CTRL, S.hold_ms);
-  inputs_begin(BEAM_PINS, S.debounce_ms, S.rearm_ms);
 
   // Start state machine
   scenes_begin();
@@ -148,6 +147,11 @@ void loop(){
   // If any beam fires, jump to its mapped scene (one per tick)
   for (uint8_t i=0; i<6; i++){
     if (inputs_triggered(i)){
+      if (console_should_log()){
+        Serial.print(F("[LOG] beam=")); Serial.print(i);
+        Serial.print(F(" pin=")); Serial.print(BEAM_PINS[i]);
+        Serial.print(F(" -> scene=")); Serial.println(scenes_name(BEAM_SCENE[i]));
+      }
       scenes_set(BEAM_SCENE[i]);
       break;
     }
