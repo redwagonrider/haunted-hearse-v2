@@ -6,6 +6,9 @@
 #include "inputs.hpp"
 #include "settings.hpp"
 #include "gopro.hpp"
+#include "gopro.hpp"
+#include "recorder.hpp"
+
 
 // =======================
 // Pin assignments (outputs)
@@ -17,6 +20,10 @@ const uint8_t LED_HOLD        = 11;  // Red indicator
 const uint8_t LED_COOLDOWN    = 12;  // Yellow indicator
 const uint8_t PIN_GOPRO_PWR = 22;   // Relay IN pin for GoPro USB 5V
 const uint32_t GOPRO_REC_MS = 20000; // 20 seconds (adjust as needed)
+const uint8_t PIN_GOPRO_PWR   = 22;
+const uint8_t PIN_TASCAM_PWR  = 23;
+const uint32_t REC_DURATION   = 20000; // 20 secnds
+
 
 // =======================
 // Break-beam runtime tables (filled from EEPROM/defaults on boot)
@@ -117,6 +124,12 @@ void setup(){
   // ... rest of setup ...
 }
 
+void setup(){
+  // ... existing setup
+  gopro_begin(PIN_GOPRO_PWR);
+  recorder_begin(PIN_TASCAM_PWR);
+}
+
   // Display first (so brightness applies cleanly)
   display_begin(0x70, 8);     // I2C addr, brightness 0..15
   display_idle("OBEY");
@@ -181,6 +194,28 @@ void loop(){
   // Service GoPro timers (powers OFF when time is up)
   gopro_update();
 
+  delay(2);
+}
+
+void loop(){
+  console_update();
+  inputs_update();
+  scenes_update();
+
+  // beam->scene jump ...
+  
+  static Scene last = Scene::Standby;
+  Scene now = scenes_current();
+  if (now != last) {
+    if (now == Scene::Graveyard) {
+      gopro_record_for(REC_DURATION);
+      recorder_record_for(REC_DURATION);
+    }
+    last = now;
+  }
+
+  gopro_update();
+  recorder_update();
   delay(2);
 }
 
