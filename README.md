@@ -1,46 +1,121 @@
-# Haunted Hearse
+# Haunted Hearse v2
 
-A unified repo for the Haunted Hearse project: Arduino triggers + FPP + Falcon F16v5 + xLights + wiring docs.
+An experimental **miniature haunted ride** built into a 1992 Cadillac Brougham (Superior Coach conversion). 
+The ride is powered by **addressable LEDs, sensors, and props**, all orchestrated by an **Arduino Mega 2560** + **Falcon F16v5** + **Raspberry Pi (FPP)** stack.
 
-## Layout
-```
-.
-├── arduino/               # Arduino sketches
-│   └── FrankenphoneLab/   # Break-beam → magnet + buzzer (dial-up), 20s cooldown, status LEDs
-├── fpp/                   # FPP exports (playlists, outputs, backups)
-├── xlights/               # xLights sequences, models, network setup exports
-├── wiring/                # Diagrams, pinouts, PDFs
-├── docs/                  # Setup guides (Pi/FPP, Falcon, power)
-└── .github/               # CI, issue templates, project board
-```
+---
 
-## Quick Start
-### Arduino (Arduino IDE)
-1. Open `arduino/FrankenphoneLab/FrankenphoneLab.ino` (Board: **Arduino/Genuino Mega or Mega 2560**).
-2. Wire as shown in `wiring/Frankenphone_Lab_Wiring_Sketch.pdf`.
-3. Upload. Break the beam to trigger the 5 s lock + modem sound; 20 s cooldown.
+## 🛠 Project Overview
 
-### PlatformIO (VS Code)
-```bash
-pio run -e mega2560
-pio run -e mega2560 -t upload
-```
+- **Ride Control**: Arduino Mega 2560 + custom breadboard modules 
+- **Lighting**: Falcon F16v5, WS2812B / WS2815 pixels, UV LEDs 
+- **Sequencing**: xLights + FPP (running on Raspberry Pi) 
+- **Props**: Electromagnets, passive buzzers, IR break-beams, sensors 
+- **Persistence**: Settings & mappings stored in EEPROM 
 
-### Arduino CLI (terminal)
-```bash
-arduino-cli core update-index
-arduino-cli core install arduino:avr
-arduino-cli compile --fqbn arduino:avr:mega arduino/FrankenphoneLab
-# Upload example (check your serial port):
-arduino-cli upload -p /dev/ttyACM0 --fqbn arduino:avr:mega arduino/FrankenphoneLab
-```
+The ride consists of **13 themed scenarios**, each triggered by break-beam sensors along the track. 
+Scenes include the **Blood Room, Graveyard, Fur Room, Orca/Dino, Frankenphones Lab, Mirror Room**, and more.
 
-### xLights & FPP
-- Keep `.xsq` and `.fseq` in `/xlights/` (large files tracked by Git LFS).
-- Upload sequences to FPP via xLights “Upload to FPP”.
-- Save FPP backups + JSON configs into `/fpp/`.
+---
 
-## Safety / Power
-- Magnet is switched with **Adafruit STEMMA MOSFET + diode** (active‑HIGH).
-- All grounds common. Fuse the 5 V rail feeding the module panel.
-- Avoid committing Wi‑Fi passwords or private keys (use local `.env`, not in git).
+## 📂 Repository Layout
+
+haunted-hearse-v2/
+
+├── include/       # Header files (console.hpp, settings.hpp, etc.)
+
+├── src/           # Source code (main.cpp, console.cpp, inputs.cpp, etc.)
+
+├── docs/          # Documentation & references
+
+├── .pio/          # PlatformIO build system
+
+├── platformio.ini # Project configuration
+
+└── README.md      # This file
+
+
+---
+
+## ⚡ Hardware Setup
+
+### Power
+- **12 V Car Battery** → feeds LED rails + converters  
+- **DROK DC-DC Converters** → 12 V regulated rail and 5 V rail for logic/props  
+- **Common Ground** required across Mega, Pi, Falcon, and power rails  
+
+### Arduino Mega 2560 Connections
+- **Break-beam sensors (6x)**: Pins 2, 3, 4, 5, 7, 9 (INPUT_PULLUP)  
+- **Magnet MOSFET driver**: Pin 6 (output → gate → electromagnet)  
+- **Passive buzzer**: Pin 8  
+- **Indicator LEDs**: Pins 10 (green), 11 (red), 12 (yellow)  
+- **I²C display**: SDA = 20, SCL = 21  
+
+### Sensors
+- IR Break-beams wired **VCC=5V**, **GND=common**, **Signal → Mega pin**  
+- Each sensor auto-debounced in code and re-arms after 20s (configurable)
+
+### Lighting
+- **Falcon F16v5** handles pixel outputs (WS2811/2815 @ 12 V, WS2812B @ 5 V)  
+- Falcon and Mega communicate via Pi/FPP for sync sequencing  
+- Pi also manages triggers and sequences if extended  
+
+### Notes
+- All grounds (12 V, 5 V, Mega, Pi, Falcon) must be tied together  
+- Use **fused distribution blocks** for safety (both 12 V and 5 V rails)  
+- EEPROM ensures tunables (hold time, cooldown, brightness, mappings) survive power cycles
+
+---
+
+## 🎛 Console Commands
+
+Connect to the Mega via **Serial Monitor @ 115200 baud**.  
+Commands are case-insensitive.
+
+### Help & Status
+- `?` or `HELP` — show all commands  
+- `CFG` — print current settings + sensor states  
+- `MAP` — print beam → scene mapping  
+
+### Timing / Settings
+- `HOLD <ms>` — set FrankenLab hold duration  
+- `COOL <ms>` — set cooldown/lockout duration  
+- `BRIGHT <0..15>` — set display brightness  
+- `SDEB <ms>` — set beam debounce (0–2000 ms)  
+- `SREARM <ms>` — set beam re-arm (0–600000 ms)  
+
+### EEPROM Persistence
+- `SAVE` — save settings to EEPROM  
+- `LOAD` — load settings from EEPROM (auto-loads on boot)  
+
+### Forcing States & Scenes
+- `STATE <code>` — force by numeric code  
+  - 0 = Standby  
+  - 1 = FrankenLab  
+  - 2 = MirrorRoom  
+  - 10 = PhoneLoading  
+  - 11 = IntroCue  
+  - 12 = BloodRoom  
+  - 13 = Graveyard  
+  - 14 = FurRoom  
+  - 15 = OrcaDino  
+  - 16 = FrankenLab  
+  - 17 = MirrorRoom  
+  - 18 = ExitHole  
+
+- `SCENE <name>` — force by scene name  
+  Examples:  
+  `SCENE BLOODROOM`, `SCENE FRANKENLAB`, `SCENE EXIT`
+
+---
+
+## 🧪 Workflow Example
+
+```text
+CFG                # check current settings
+HOLD 6000          # set hold duration to 6s
+BRIGHT 10          # adjust display brightness
+SAVE               # persist changes to EEPROM
+SCENE FRANKENLAB   # force Frankenphones Lab scene
+MAP                # confirm beam mapping
+
