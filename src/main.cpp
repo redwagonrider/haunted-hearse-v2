@@ -5,6 +5,7 @@
 #include "scenes.hpp"
 #include "inputs.hpp"
 #include "settings.hpp"
+#include "gopro.hpp"
 
 // =======================
 // Pin assignments (outputs)
@@ -14,6 +15,8 @@ const uint8_t PIN_BUZZER      = 8;   // Passive buzzer (+); (-) to GND
 const uint8_t LED_ARMED       = 10;  // Green indicator
 const uint8_t LED_HOLD        = 11;  // Red indicator
 const uint8_t LED_COOLDOWN    = 12;  // Yellow indicator
+const uint8_t PIN_GOPRO_PWR = 22;   // Relay IN pin for GoPro USB 5V
+const uint32_t GOPRO_REC_MS = 20000; // 20 seconds (adjust as needed)
 
 // =======================
 // Break-beam runtime tables (filled from EEPROM/defaults on boot)
@@ -108,6 +111,12 @@ void setup(){
   // Seed RNG (harmless without sensor on A0)
   randomSeed(analogRead(A0));
 
+void setup(){
+  // ... existing setup code ...
+  gopro_begin(PIN_GOPRO_PWR);
+  // ... rest of setup ...
+}
+
   // Display first (so brightness applies cleanly)
   display_begin(0x70, 8);     // I2C addr, brightness 0..15
   display_idle("OBEY");
@@ -139,6 +148,41 @@ void setup(){
 void loop(){
   // Always keep console responsive
   console_update();
+
+void loop(){
+  console_update();
+  inputs_update();
+  scenes_update();
+
+  // Beam->scene jump (your existing block)
+  for (uint8_t i=0; i<6; i++){
+    if (inputs_triggered(i)){
+      scenes_set(BEAM_SCENE[i]);
+      break;
+    }
+  }
+
+  // --- GoPro trigger on scene transition to Graveyard ---
+  static Scene last = Scene::Standby;
+  Scene now = scenes_current();
+  if (now != last) {
+    // Entering a new scene
+    if (now == Scene::Graveyard) {
+      // Start recording for GOPRO_REC_MS, will auto-stop
+      gopro_record_for(GOPRO_REC_MS);
+    }
+    // Optional: stop instantly when leaving Graveyard (uncomment if desired)
+    // if (last == Scene::Graveyard) {
+    //   gopro_power(false);
+    // }
+    last = now;
+  }
+
+  // Service GoPro timers (powers OFF when time is up)
+  gopro_update();
+
+  delay(2);
+}
 
   // Sensors + scene logic
   inputs_update();
