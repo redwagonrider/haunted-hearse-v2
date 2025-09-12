@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include "console.hpp"
-#include "settings.hpp"  // for SAVE/LOAD direct calls
+#include "settings.hpp"  // for SAVE/LOAD + beam setters
+
+// We call a helper in main.cpp to re-apply mappings after edits
+extern void apply_mapping_from_settings();
 
 // === Callback storage (wired by console_attach in main.cpp) ===
 static void (*cbSetHold)(uint32_t)   = nullptr;
@@ -13,12 +16,13 @@ static void (*cbPrint)()             = nullptr;
 static unsigned long g_baud = 115200;
 static String g_line;
 
+// === Log mode flag ===
+static bool g_log = false;
+bool console_should_log(){ return g_log; }
+
 // --- helpers ---
 static String toUpperTrim(const String& in){
-  String s = in;
-  s.trim();
-  s.toUpperCase();
-  return s;
+  String s = in; s.trim(); s.toUpperCase(); return s;
 }
 
 static long parseLong(const String& s, bool& ok){
@@ -26,6 +30,21 @@ static long parseLong(const String& s, bool& ok){
   long v = strtol(s.c_str(), &end, 10);
   ok = (end && *end == '\0');
   return v;
+}
+
+static int nameToSceneCode(const String& n){
+  String arg = toUpperTrim(n);
+  if      (arg == "STANDBY")        return 0;
+  else if (arg == "PHONELOADING")   return 10;
+  else if (arg == "INTRO" || arg == "INTRO CUE" || arg == "INTRO_CUE") return 11;
+  else if (arg == "BLOOD" || arg == "BLOODROOM" || arg == "BLOOD_ROOM") return 12;
+  else if (arg == "GRAVE" || arg == "GRAVEYARD") return 13;
+  else if (arg == "FUR" || arg == "FURROOM" || arg == "FUR_ROOM") return 14;
+  else if (arg == "ORCA" || arg == "ORCADINO" || arg == "ORCA_DINO") return 15;
+  else if (arg == "LAB" || arg == "FRANKENLAB" || arg == "FRANKENPHONES" || arg == "FRANKENPHONES LAB") return 16;
+  else if (arg == "MIRROR" || arg == "MIRRORROOM" || arg == "MIRROR_ROOM") return 17;
+  else if (arg == "EXIT" || arg == "EXITHOLE" || arg == "EXIT_HOLE") return 18;
+  return -1;
 }
 
 void console_begin(unsigned long baud){
@@ -56,14 +75,14 @@ static void printHelp(){
   Serial.println(F("  HOLD <ms>             - set hold duration"));
   Serial.println(F("  COOL <ms>             - set cooldown/lockout"));
   Serial.println(F("  BRIGHT <0..15>        - set display brightness"));
-  Serial.println(F("  STATE <code>          - force state (0/1/2 or 10..18)"));
-  Serial.println(F("  SCENE <name>          - jump to scene by name"));
-  Serial.println(F("     names: STANDBY, PHONELOADING, INTRO, BLOODROOM,"));
-  Serial.println(F("            GRAVEYARD, FURROOM, ORCADINO, FRANKENLAB, MIRRORROOM, EXITHOLE"));
-  Serial.println(F("  SDEB <ms>             - set debounce ms (0..2000)"));
-  Serial.println(F("  SREARM <ms>           - set re-arm ms (0..600000)"));
-  Serial.println(F("  SAVE                  - save settings to EEPROM"));
-  Serial.println(F("  LOAD                  - load settings from EEPROM"));
+  Serial.println(F("  SDEB <ms>             - set debounce (0..2000)"));
+  Serial.println(F("  SREARM <ms>           - set re-arm (0..600000)"));
+  Serial.println(F("  SAVE / LOAD           - EEPROM persist / restore"));
+  Serial.println(F("  STATE <code>          - quick force (0/1/2 or 10..18)"));
+  Serial.println(F("  SCENE <name>          - force by name"));
+  Serial.println(F("  BMAP <idx> <pin>      - set beam index->Arduino pin"));
+  Serial.println(F("  BSCENE <idx> <name|code> - set beam index->scene"));
+  Serial.println(F("  LOG ON|OFF            - toggle event logging"));
 }
 
 void console_update(){
@@ -72,142 +91,129 @@ void console_update(){
     if (c == '\r') continue;
     if (c != '\n'){
       g_line += c;
-      // basic line overflow protection
       if (g_line.length() > 200) g_line = "";
       continue;
     }
 
     // full line received
-    String line = g_line;
-    g_line = "";
-
+    String line = g_line; g_line = "";
     String uc = toUpperTrim(line);
     if (uc.length() == 0) continue;
 
     // HELP / ?
-    if (uc == "?" || uc == "HELP"){
-      printHelp();
+    if (uc == "?" || uc == "HELP"){ printHelp(); continue; }
+
+    // CFG / MAP
+    if (uc == "CFG"){ if (cbPrint) cbPrint(); else Serial.println(F("No printer")); continue; }
+    if (uc == "MAP"){ if (cbPrint) cbPrint(); Serial.println(F("OK MAP")); continue; }
+
+    // SAVE / LOAD
+    if (uc == "SAVE"){ settings_save(); Serial.println(F("OK SAVE")); continue; }
+    if (uc == "LOAD"){ if (settings_load()) Serial.println(F("OK LOAD")); else Serial.println(F("ERR LOAD")); continue; }
+
+    // LOG ON|OFF
+    if (uc.startsWith("LOG ")){
+      String a = toUpperTrim(line.substring(4));
+      if (a == "ON"){ g_log = true; Serial.println(F("OK LOG ON")); }
+      else if (a == "OFF"){ g_log = false; Serial.println(F("OK LOG OFF")); }
+      else Serial.println(F("ERR LOG ON|OFF"));
       continue;
     }
 
-    // CFG -> print status
-    if (uc == "CFG"){
-      if (cbPrint) cbPrint();
-      else Serial.println(F("No printer attached"));
-      continue;
-    }
-
-    // MAP -> reuse printer (it includes beam map now)
-    if (uc == "MAP"){
-      if (cbPrint) cbPrint();
-      Serial.println(F("OK MAP"));
-      continue;
-    }
-
-    // SAVE / LOAD (directly call settings module)
-    if (uc == "SAVE"){
-      settings_save();
-      Serial.println(F("OK SAVE"));
-      continue;
-    }
-    if (uc == "LOAD"){
-      if (settings_load()) Serial.println(F("OK LOAD"));
-      else                 Serial.println(F("ERR LOAD (invalid EEPROM)"));
-      continue;
-    }
-
-    // HOLD <ms>
+    // HOLD / COOL / BRIGHT
     if (uc.startsWith("HOLD ")){
-      String a = toUpperTrim(line.substring(5));
-      bool ok=false; long v = parseLong(a, ok);
-      if (ok && v >= 0){
-        if (cbSetHold) cbSetHold((uint32_t)v);
-        Serial.println(F("OK HOLD"));
-      } else Serial.println(F("ERR HOLD <ms>"));
+      bool ok=false; long v = parseLong(line.substring(5), ok);
+      if (ok && v >= 0){ if (cbSetHold) cbSetHold((uint32_t)v); Serial.println(F("OK HOLD")); }
+      else Serial.println(F("ERR HOLD <ms>"));
       continue;
     }
-
-    // COOL <ms>
     if (uc.startsWith("COOL ")){
-      String a = toUpperTrim(line.substring(5));
-      bool ok=false; long v = parseLong(a, ok);
-      if (ok && v >= 0){
-        if (cbSetCool) cbSetCool((uint32_t)v);
-        Serial.println(F("OK COOL"));
-      } else Serial.println(F("ERR COOL <ms>"));
+      bool ok=false; long v = parseLong(line.substring(5), ok);
+      if (ok && v >= 0){ if (cbSetCool) cbSetCool((uint32_t)v); Serial.println(F("OK COOL")); }
+      else Serial.println(F("ERR COOL <ms>"));
       continue;
     }
-
-    // BRIGHT <0..15>
     if (uc.startsWith("BRIGHT ")){
-      String a = toUpperTrim(line.substring(7));
-      bool ok=false; long v = parseLong(a, ok);
-      if (ok && v >= 0 && v <= 15){
-        if (cbSetBright) cbSetBright((uint8_t)v);
-        Serial.println(F("OK BRIGHT"));
-      } else Serial.println(F("ERR BRIGHT 0..15"));
+      bool ok=false; long v = parseLong(line.substring(7), ok);
+      if (ok && v >= 0 && v <= 15){ if (cbSetBright) cbSetBright((uint8_t)v); Serial.println(F("OK BRIGHT")); }
+      else Serial.println(F("ERR BRIGHT 0..15"));
       continue;
     }
 
-    // SDEB <ms>
+    // SDEB / SREARM
     if (uc.startsWith("SDEB ")){
-      String a = toUpperTrim(line.substring(5));
-      bool ok=false; long v = parseLong(a, ok);
-      if (ok && v >= 0 && v <= 2000){
-        settings_set_debounce((uint16_t)v); // applies via callback set in settings_begin
-        Serial.println(F("OK SDEB"));
-      } else Serial.println(F("ERR SDEB 0..2000"));
+      bool ok=false; long v = parseLong(line.substring(5), ok);
+      if (ok && v >= 0 && v <= 2000){ settings_set_debounce((uint16_t)v); Serial.println(F("OK SDEB")); }
+      else Serial.println(F("ERR SDEB 0..2000"));
       continue;
     }
-
-    // SREARM <ms>
     if (uc.startsWith("SREARM ")){
-      String a = toUpperTrim(line.substring(7));
-      bool ok=false; long v = parseLong(a, ok);
-      if (ok && v >= 0 && v <= 600000){
-        settings_set_rearm((uint32_t)v);
-        Serial.println(F("OK SREARM"));
-      } else Serial.println(F("ERR SREARM 0..600000"));
+      bool ok=false; long v = parseLong(line.substring(7), ok);
+      if (ok && v >= 0 && v <= 600000){ settings_set_rearm((uint32_t)v); Serial.println(F("OK SREARM")); }
+      else Serial.println(F("ERR SREARM 0..600000"));
       continue;
     }
 
-    // STATE <code>  (0/1/2 quick; 10..18 full list)
+    // STATE <code>
     if (uc.startsWith("STATE ")){
-      String a = toUpperTrim(line.substring(6));
-      bool ok=false; long v = parseLong(a, ok);
-      if (ok){
-        if (cbForce) cbForce((int)v);
-        Serial.println(F("OK STATE"));
-      } else Serial.println(F("ERR STATE <int>"));
+      bool ok=false; long v = parseLong(line.substring(6), ok);
+      if (ok){ if (cbForce) cbForce((int)v); Serial.println(F("OK STATE")); }
+      else Serial.println(F("ERR STATE <int>"));
       continue;
     }
 
     // SCENE <name>
     if (uc.startsWith("SCENE ")){
-      String arg = toUpperTrim(line.substring(6));
-      int code = -1;
-
-      if      (arg == "STANDBY")        code = 0;
-      else if (arg == "PHONELOADING")   code = 10;
-      else if (arg == "INTRO" || arg == "INTRO CUE" || arg == "INTRO_CUE") code = 11;
-      else if (arg == "BLOOD" || arg == "BLOODROOM" || arg == "BLOOD_ROOM") code = 12;
-      else if (arg == "GRAVE" || arg == "GRAVEYARD") code = 13;
-      else if (arg == "FUR" || arg == "FURROOM" || arg == "FUR_ROOM") code = 14;
-      else if (arg == "ORCA" || arg == "ORCADINO" || arg == "ORCA_DINO") code = 15;
-      else if (arg == "LAB" || arg == "FRANKENLAB" || arg == "FRANKENPHONES" || arg == "FRANKENPHONES LAB") code = 16;
-      else if (arg == "MIRROR" || arg == "MIRRORROOM" || arg == "MIRROR_ROOM") code = 17;
-      else if (arg == "EXIT" || arg == "EXITHOLE" || arg == "EXIT_HOLE") code = 18;
-
-      if (code >= 0){
-        if (cbForce) cbForce(code);
-        Serial.println(F("OK SCENE"));
-      } else {
-        Serial.println(F("ERR SCENE name unknown"));
-      }
+      int code = nameToSceneCode(line.substring(6));
+      if (code >= 0){ if (cbForce) cbForce(code); Serial.println(F("OK SCENE")); }
+      else Serial.println(F("ERR SCENE name unknown"));
       continue;
     }
 
-    // Unknown command
+    // BMAP <idx> <pin>
+    if (uc.startsWith("BMAP ")){
+      // split by space
+      String rest = line.substring(5); rest.trim();
+      int sp = rest.indexOf(' ');
+      if (sp < 0){ Serial.println(F("ERR BMAP <idx> <pin>")); continue; }
+      String sIdx = rest.substring(0, sp);
+      String sPin = rest.substring(sp+1);
+      bool ok1=false, ok2=false;
+      long idx = parseLong(sIdx, ok1);
+      long pin = parseLong(sPin, ok2);
+      if (!ok1 || !ok2 || idx < 0 || idx > 5 || pin < 0 || pin > 69){
+        Serial.println(F("ERR BMAP idx=0..5 pin=0..69"));
+        continue;
+      }
+      settings_set_beam_pin((uint8_t)idx, (uint8_t)pin);
+      apply_mapping_from_settings();
+      Serial.println(F("OK BMAP"));
+      continue;
+    }
+
+    // BSCENE <idx> <name|code>
+    if (uc.startsWith("BSCENE ")){
+      String rest = line.substring(7); rest.trim();
+      int sp = rest.indexOf(' ');
+      if (sp < 0){ Serial.println(F("ERR BSCENE <idx> <name|code>")); continue; }
+      String sIdx = rest.substring(0, sp);
+      String sArg = rest.substring(sp+1);
+      bool ok=false; long idx = parseLong(sIdx, ok);
+      if (!ok || idx < 0 || idx > 5){ Serial.println(F("ERR BSCENE idx=0..5")); continue; }
+
+      int code;
+      bool numOK=false; long asNum = parseLong(sArg, numOK);
+      if (numOK) code = (int)asNum;
+      else       code = nameToSceneCode(sArg);
+
+      if (code < 0 || code > 255){ Serial.println(F("ERR BSCENE name/code invalid")); continue; }
+      settings_set_beam_scene((uint8_t)idx, (uint8_t)code);
+      apply_mapping_from_settings();
+      Serial.println(F("OK BSCENE"));
+      continue;
+    }
+
+    // Unknown
     Serial.println(F("ERR ? for help"));
   }
 }
