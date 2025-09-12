@@ -1,8 +1,7 @@
 #include <Arduino.h>
 #include "console.hpp"
-#include "settings.hpp"  // for SAVE/LOAD + beam setters
-
-// We call a helper in main.cpp to re-apply mappings after edits
+#include "settings.hpp"  // SAVE/LOAD, versions, reset
+// main.cpp provides this to re-apply mapping after edits:
 extern void apply_mapping_from_settings();
 
 // === Callback storage (wired by console_attach in main.cpp) ===
@@ -70,6 +69,7 @@ void console_attach(void (*setHold)(uint32_t),
 static void printHelp(){
   Serial.println(F("Commands:"));
   Serial.println(F("  ? or HELP             - show this help"));
+  Serial.println(F("  VER                   - show firmware/EEPROM versions"));
   Serial.println(F("  CFG                   - show status/settings"));
   Serial.println(F("  MAP                   - print beam->scene mapping"));
   Serial.println(F("  HOLD <ms>             - set hold duration"));
@@ -78,6 +78,7 @@ static void printHelp(){
   Serial.println(F("  SDEB <ms>             - set debounce (0..2000)"));
   Serial.println(F("  SREARM <ms>           - set re-arm (0..600000)"));
   Serial.println(F("  SAVE / LOAD           - EEPROM persist / restore"));
+  Serial.println(F("  RESET                 - factory reset (defaults)"));
   Serial.println(F("  STATE <code>          - quick force (0/1/2 or 10..18)"));
   Serial.println(F("  SCENE <name>          - force by name"));
   Serial.println(F("  BMAP <idx> <pin>      - set beam index->Arduino pin"));
@@ -103,13 +104,29 @@ void console_update(){
     // HELP / ?
     if (uc == "?" || uc == "HELP"){ printHelp(); continue; }
 
+    // VER
+    if (uc == "VER"){
+      uint16_t magic; uint8_t eep, fw;
+      settings_versions(magic, eep, fw);
+      Serial.print(F("FW=")); Serial.print(fw);
+      Serial.print(F(" EEP_VER=")); Serial.print(eep);
+      Serial.print(F(" MAGIC=0x")); Serial.println(magic, HEX);
+      continue;
+    }
+
     // CFG / MAP
     if (uc == "CFG"){ if (cbPrint) cbPrint(); else Serial.println(F("No printer")); continue; }
     if (uc == "MAP"){ if (cbPrint) cbPrint(); Serial.println(F("OK MAP")); continue; }
 
-    // SAVE / LOAD
+    // SAVE / LOAD / RESET
     if (uc == "SAVE"){ settings_save(); Serial.println(F("OK SAVE")); continue; }
     if (uc == "LOAD"){ if (settings_load()) Serial.println(F("OK LOAD")); else Serial.println(F("ERR LOAD")); continue; }
+    if (uc == "RESET"){
+      settings_reset_defaults(true); // reset & SAVE
+      apply_mapping_from_settings();
+      Serial.println(F("OK RESET (defaults applied + saved)"));
+      continue;
+    }
 
     // LOG ON|OFF
     if (uc.startsWith("LOG ")){
@@ -172,7 +189,6 @@ void console_update(){
 
     // BMAP <idx> <pin>
     if (uc.startsWith("BMAP ")){
-      // split by space
       String rest = line.substring(5); rest.trim();
       int sp = rest.indexOf(' ');
       if (sp < 0){ Serial.println(F("ERR BMAP <idx> <pin>")); continue; }
