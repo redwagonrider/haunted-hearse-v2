@@ -1,25 +1,35 @@
 #pragma once
 #include <Arduino.h>
 
-// Initialize effects module with pin map and current HOLD duration
-void effects_begin(uint8_t pinLedArmed,
-                   uint8_t pinLedHold,
-                   uint8_t pinLedCooldown,
+// Initialize effects system and bind pins
+void effects_begin(uint8_t pinLED_armed,
+                   uint8_t pinLED_hold,
+                   uint8_t pinLED_cool,
                    uint8_t pinBuzzer,
                    uint8_t pinMagnet,
-                   unsigned long holdMs);
+                   uint32_t hold_ms_default);
 
-// If you adjust the hold length later
-void effects_setHoldMs(unsigned long holdMs);
+// Change hold duration at runtime (used by settings/console)
+void effects_setHoldMs(uint32_t ms);
 
-// Magnet helpers
-void effects_magnet_on();
-void effects_magnet_off();
+// Standby visuals (green slow pulse). Call every loop while in Standby.
+void effects_showStandby();
 
-// Sound helpers
-void effects_sound_stop();            // stop any buzzer tone
+// Enter FrankenLab hold (turn on magnet, start red stutter + chirps)
+// Call once when the scene changes into FrankenLab.
+void effects_startHold();
 
-// Per-state visual/audio updates (call each loop)
-void effects_idle_update();           // green breathe
-void effects_hold_update(unsigned long elapsedMs);   // red stutter + modem sound
-void effects_cooldown_update();       // yellow flicker
+// Update FrankenLab hold animation/audio. Call every loop while in FrankenLab.
+void effects_updateHold();
+
+// Exit FrankenLab hold (stop tone, magnet off, red off). Call once on transition out.
+void effects_endHold();
+
+// Enter Cooldown (yellow flicker). Call once when going into cooldown.
+void effects_startCooldown();
+
+// Update Cooldown flicker. Call every loop while in Cooldown.
+void effects_updateCooldown();
+
+// NEW: brief solid-green flash to indicate the system is re-armed (called on entry to Standby)
+void effects_rearmCue();
