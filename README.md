@@ -54,6 +54,29 @@ haunted-hearse-v2/
 ### Sensors
 - IR Break-beams wired **VCC=5V**, **GND=common**, **Signal → Mega pin**  
 - Each sensor auto-debounced in code and re-arms after 20s (configurable)
+## Beams and Scene Map
+
+All show beams are **active LOW** with `INPUT_PULLUP`. Debounce 30 ms. Auto re-arm 20 s.
+
+| Beam | Arduino Pin | Purpose                        |
+|-----:|-------------|--------------------------------|
+| B0   | D2          | Frankenphones Lab              |
+| B1   | D3          | Intro / Cue Card into Blackout |
+| B2   | D4          | Blood Room                     |
+| B3   | D5          | Graveyard                      |
+| B4   | D7          | Mirror Room                    |
+| B5   | D9          | Exit                           |
+| B6   | D30         | Tech Booth Light reed switch   |
+
+### Tech Booth Light control
+
+- Hardware: Adafruit 375 reed switch on D30. Output driver on D26 to MOSFET or relay.
+- Priority: **Intro/Cue** scene forces lights **OFF** immediately.  
+  Console commands override the reed switch:  
+  - `LIGHT ON` forces ON  
+  - `LIGHT OFF` forces OFF  
+  - `LIGHT AUTO` follows the reed again  
+  - `LIGHT TOGGLE` flips the current state
 
 ### Lighting
 - **Falcon F16v5** handles pixel outputs (WS2811/2815 @ 12 V, WS2812B @ 5 V)  

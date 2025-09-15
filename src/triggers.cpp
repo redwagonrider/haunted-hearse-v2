@@ -1,83 +1,54 @@
-// triggers.cpp
+// src/triggers.cpp
+#include <Arduino.h>
 #include "triggers.hpp"
 
-// Hardware mapping: Mega D22..D25
-static const uint8_t kOutPins[4] = {22, 23, 24, 25};
+// Mega output pins that drive the optocoupler LEDs or relay inputs (active HIGH)
+static const uint8_t PIN_TRIG[4] = {22, 23, 24, 25};
+static const char*   NAME_TRIG[4] = {"BLOOD", "GRAVE", "FUR", "FRANKEN"};
 
-// For your ops card: Pi GPIO targets per channel
-static const uint8_t kPiGPIO[4] = {17, 27, 22, 23};
+// Simple lockout to avoid double-pulses
+static unsigned long last_fire_ms[4] = {0,0,0,0};
+static const unsigned long MIN_LOCKOUT_MS = 300;
 
-// Friendly names for logs or future console prints
-static const char* kNames[4] = {
-  "Start_BloodRoom",
-  "Start_Graveyard",
-  "Start_FurRoom",
-  "Start_FrankenLab"
-};
-
-struct Chan {
-  uint8_t  pin;
-  uint32_t t_on;           // when pulse started
-  uint32_t t_lockout;      // when channel becomes armed again
-  bool     active;         // pulse currently high
-};
-
-static Chan CH[4];
-static TriggerConfig CFG = {100, 300};
-
-void triggers_begin(const TriggerConfig& cfg) {
-  CFG = cfg;
-  for (uint8_t i = 0; i < 4; i++) {
-    CH[i].pin = kOutPins[i];
-    CH[i].t_on = 0;
-    CH[i].t_lockout = 0;
-    CH[i].active = false;
-    pinMode(CH[i].pin, OUTPUT);
-    digitalWrite(CH[i].pin, LOW); // idle low, pulse drives HIGH
+void triggers_begin() {
+  for (uint8_t i = 0; i < 4; ++i) {
+    pinMode(PIN_TRIG[i], OUTPUT);
+    digitalWrite(PIN_TRIG[i], LOW); // idle OFF
+    last_fire_ms[i] = 0;
   }
 }
 
-bool triggers_fire(TriggerId id) {
-  if (id > TRIG_FRANKENLAB) return false;
-  Chan& c = CH[(uint8_t)id];
-  uint32_t now = millis();
+bool triggers_pulse(uint8_t idx, uint16_t ms) {
+  if (idx >= 4) return false;
+  unsigned long now = millis();
+  if (now - last_fire_ms[idx] < MIN_LOCKOUT_MS) return false;
 
-  // lockout
-  if (now < c.t_lockout) return false;
-  if (c.active) return false;
+  digitalWrite(PIN_TRIG[idx], HIGH);
+  delay(ms);
+  digitalWrite(PIN_TRIG[idx], LOW);
 
-  c.active = true;
-  c.t_on = now;
-  c.t_lockout = now + CFG.lockout_ms;
-
-  digitalWrite(c.pin, HIGH); // begin pulse
-
+  last_fire_ms[idx] = millis();
   return true;
 }
 
-void triggers_update() {
-  uint32_t now = millis();
-  for (uint8_t i = 0; i < 4; i++) {
-    Chan& c = CH[i];
-    if (c.active && (now - c.t_on >= CFG.pulse_ms)) {
-      digitalWrite(c.pin, LOW); // end pulse
-      c.active = false;
-      // lockout continues until c.t_lockout
-    }
+static int name_to_index(const String& up) {
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (up == NAME_TRIG[i]) return i;
   }
+  return -1;
 }
 
-uint8_t triggers_pin_for(TriggerId id) {
-  if (id > TRIG_FRANKENLAB) return 255;
-  return kOutPins[(uint8_t)id];
+bool triggers_pulse_by_name(const String& upname) {
+  int idx = name_to_index(upname);
+  if (idx < 0) return false;
+  return triggers_pulse((uint8_t)idx, 100);
 }
 
-uint8_t triggers_pi_gpio_for(TriggerId id) {
-  if (id > TRIG_FRANKENLAB) return 255;
-  return kPiGPIO[(uint8_t)id];
-}
-
-const char* triggers_name_for(TriggerId id) {
-  if (id > TRIG_FRANKENLAB) return "";
-  return kNames[(uint8_t)id];
+void triggers_print_map() {
+  Serial.println(F("=== GPIO Trigger Map (Mega -> Pi) ==="));
+  Serial.println(F("  D22 -> GPIO17 : Start_BloodRoom"));
+  Serial.println(F("  D23 -> GPIO27 : Start_Graveyard"));
+  Serial.println(F("  D24 -> GPIO22 : Start_FurRoom"));
+  Serial.println(F("  D25 -> GPIO23 : Start_FrankenLab"));
+  Serial.println(F("Pulse: 100 ms active, ~300 ms lockout, Pi triggers on FALLING edge"));
 }

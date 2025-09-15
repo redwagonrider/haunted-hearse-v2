@@ -1,138 +1,174 @@
-#include "inputs.hpp"
+// src/inputs.cpp
+#include <Arduino.h>
+#include "pins.hpp"
+#include "console.hpp"
+#include "techlight.hpp"   // NEW
 
-namespace {
-  struct Beam {
-    uint8_t  pin = 255;          // 255 = unused
-    bool     invert = false;     // if true, HIGH = broken
-    bool     lastStable = false; // debounced logical state (true=broken)
-    bool     curRaw    = false;  // immediate read
-    bool     event     = false;  // one-shot latched event
-    bool     armed     = true;   // can fire again?
-    unsigned long lastChangeMs = 0;
-    unsigned long lastFireMs   = 0;
-  };
+// Scene entry points
+#include "scenes/scene_frankenphone.hpp"
+void scene_intro();
+void scene_blackout();
+void scene_blood();
+void scene_graveyard();
+void scene_mirror();
+void scene_exit();
 
-  Beam G[6];
-  uint16_t DEBOUNCE_MS = 30;
-  uint32_t REARM_MS    = 20000;
+static const uint8_t N_SCENE_BEAMS = 6; // beams 0..5 launch scenes
 
-  inline bool isUsed(const Beam& b){ return b.pin != 255; }
+// Map: which Arduino pins are beams 0..6
+static const uint8_t BEAM_PINS[7] = {
+  PIN_BEAM_0, PIN_BEAM_1, PIN_BEAM_2, PIN_BEAM_3, PIN_BEAM_4, PIN_BEAM_5, PIN_BEAM_6
+};
+static const char*   BEAM_NAMES[7] = { "B0","B1","B2","B3","B4","B5","B6" };
 
-  // Convert digitalRead -> logical "broken?"
-  inline bool rawToBroken(bool raw, bool invert){
-    // default: active LOW sensors (LOW=broken) -> invert=false
-    // if invert=true: HIGH=broken
-    return invert ? raw : !raw;
+// Debounce and rearm timing
+static const unsigned long DEBOUNCE_MS = 30;
+static const unsigned long REARM_MS    = 20000; // 20 s
+
+// Per-beam state machine (for beams 0..5)
+static uint8_t stable_state[6];     // 0 clear, 1 broken
+static uint8_t last_raw[6];
+static unsigned long t_change[6];
+static unsigned long t_last_fire[6];
+
+// Beam 6 (reed) raw tracking
+static uint8_t  reed_last_raw = 1;  // 1 = open due to pullup
+static uint8_t  reed_stable   = 1;
+static unsigned long reed_t_change = 0;
+
+// Tech light control state
+// -1 = AUTO (follow reed), 0 = FORCE_OFF, 1 = FORCE_ON
+static int8_t gLightOverride = -1;
+static bool   gLightIsOn     = false;
+static unsigned long gLightBlockUntil = 0; // while now < this, force OFF regardless
+
+// Helpers
+static inline uint8_t raw_active_low(uint8_t pin) { return digitalRead(pin) == LOW ? 1 : 0; }
+
+static inline void techlight_write_hw(bool on) {
+#if TECHLIGHT_ACTIVE_HIGH
+  digitalWrite(PIN_TECHLIGHT, on ? HIGH : LOW);
+#else
+  digitalWrite(PIN_TECHLIGHT, on ? LOW : HIGH);
+#endif
+  gLightIsOn = on;
+}
+
+// ====== Techlight API (implementation) ======
+void techlight_override_on()  { gLightOverride = 1;  techlight_write_hw(true);  console_log("TechLight OVERRIDE ON"); }
+void techlight_override_off() { gLightOverride = 0;  techlight_write_hw(false); console_log("TechLight OVERRIDE OFF"); }
+void techlight_override_auto(){ gLightOverride = -1; console_log("TechLight AUTO (follow reed)"); }
+void techlight_scene_intro_kill(uint16_t ms_holdoff) {
+  techlight_write_hw(false);
+  gLightBlockUntil = millis() + ms_holdoff;
+  console_log("TechLight OFF by Intro/Cue");
+}
+bool techlight_is_on() { return gLightIsOn; }
+const char* techlight_mode_name() {
+  switch (gLightOverride) {
+    case 1:  return "FORCE_ON";
+    case 0:  return "FORCE_OFF";
+    default: return "AUTO";
   }
 }
 
-void inputs_begin(const uint8_t pins[6], uint16_t debounce_ms, uint32_t rearm_ms){
-  DEBOUNCE_MS = debounce_ms;
-  REARM_MS    = rearm_ms;
-  for (uint8_t i=0;i<6;i++){
-    G[i] = Beam{}; // reset
-    if (pins[i] != 255){
-      G[i].pin = pins[i];
-      pinMode(G[i].pin, INPUT_PULLUP); // typical beam receiver
-      // First sample establishes initial stable state
-      bool raw = digitalRead(G[i].pin);
-      G[i].curRaw = raw;
-      G[i].lastStable = rawToBroken(raw, G[i].invert);
-      G[i].armed = true;
-      G[i].lastChangeMs = millis();
-      G[i].lastFireMs   = 0;
-    }
+// ====== Scene mapper ======
+static void scene_for_beam(uint8_t idx) {
+  switch (idx) {
+    case 0: scene_frankenphone(); break;               // Frankenphones Lab
+    case 1: scene_intro(); techlight_scene_intro_kill(); break; // Intro/Cue forces lights OFF
+    case 2: scene_blood(); break;                      // Blood Room
+    case 3: scene_graveyard(); break;                  // Graveyard
+    case 4: scene_mirror(); break;                     // Mirror Room
+    case 5: scene_exit(); break;                       // Exit
+    default: break;
   }
-}
-
-void inputs_setDebounce(uint16_t ms){ DEBOUNCE_MS = ms; }
-void inputs_setRearm(uint32_t ms){ REARM_MS = ms; }
-
-void inputs_setInvert(uint8_t idx, bool inverted){
-  if (idx >= 6 || !isUsed(G[idx])) return;
-  G[idx].invert = inverted;
-  // Re-evaluate stable state immediately
-  bool raw = digitalRead(G[idx].pin);
-  G[idx].curRaw = raw;
-  G[idx].lastStable = rawToBroken(raw, G[idx].invert);
-  G[idx].event = false;
-  G[idx].armed = true;
-  G[idx].lastChangeMs = millis();
-}
-
-bool inputs_triggered(uint8_t idx){
-  if (idx >= 6 || !isUsed(G[idx])) return false;
-  bool e = G[idx].event;
-  G[idx].event = false; // consume one-shot
-  return e;
-}
-
-void inputs_update(){
-  const unsigned long now = millis();
-  for (uint8_t i=0;i<6;i++){
-    if (!isUsed(G[i])) continue;
-
-    bool raw = digitalRead(G[i].pin);
-    if (raw != G[i].curRaw){
-      G[i].curRaw = raw;
-      G[i].lastChangeMs = now; // start debounce
-    }
-
-    // Debounce
-    if ((now - G[i].lastChangeMs) >= DEBOUNCE_MS){
-      bool broken = rawToBroken(G[i].curRaw, G[i].invert);
-      if (broken != G[i].lastStable){
-        // stable edge occurred
-        G[i].lastStable = broken;
-        if (broken){
-          // Rising into "broken" -> potential fire
-          if (G[i].armed){
-            G[i].event = true;
-            G[i].armed = false;
-            G[i].lastFireMs = now;
-          }
-        } else {
-          // Returned to OK; start re-arm timer from this moment
-          // (or keep lastFireMs timing—either works; we choose OK moment)
-          if (!G[i].armed){
-            // wait for REARM_MS after returning OK
-          }
-        }
-      }
-    }
-
-    // Re-arm logic: require OK for a while, then re-arm
-    if (!G[i].armed){
-      // Only re-arm if currently OK, and enough time elapsed since lastFire or since OK
-      if (!G[i].lastStable){ // OK state
-        if ((now - max(G[i].lastFireMs, G[i].lastChangeMs)) >= REARM_MS){
-          G[i].armed = true;
-        }
-      }
-    }
-  }
-}
-
-void inputs_printStatus(Stream& s){
-  s.println(F("== Sensors =="));
-  for (uint8_t i=0;i<6;i++){
-    if (!isUsed(G[i])) {
-      s.print('#'); s.print(i); s.println(F(" unused"));
-      continue;
-    }
-    bool raw = digitalRead(G[i].pin);
-    bool broken = rawToBroken(raw, G[i].invert);
-    s.print('#'); s.print(i);
-    s.print(F(" pin=")); s.print(G[i].pin);
-    s.print(F(" inv=")); s.print(G[i].invert ? F("Y") : F("N"));
-    s.print(F(" state=")); s.print(broken ? F("BROKEN") : F("OK"));
-    s.print(F(" armed=")); s.print(G[i].armed ? F("Y") : F("N"));
-    s.print(F(" (event=")); s.print(G[i].event ? F("YES" ) : F("no" ));
-    s.println(F(")"));
-  }
-  s.print(F("debounce=")); s.print(DEBOUNCE_MS); s.print(F("ms, rearm=")); s.print(REARM_MS); s.println(F("ms"));
 }
 
 void inputs_init() {
-  // Optional: pinMode or setup logic here
+  // Beams 0..5
+  for (uint8_t i = 0; i < N_SCENE_BEAMS; ++i) {
+    pinMode(BEAM_PINS[i], INPUT_PULLUP);
+    uint8_t r = raw_active_low(BEAM_PINS[i]);
+    last_raw[i]   = r;
+    stable_state[i]= r;
+    t_change[i]   = millis();
+    t_last_fire[i]= 0;
+  }
+
+  // Beam 6: Reed switch (Adafruit 375). INPUT_PULLUP, active when CLOSED.
+  pinMode(PIN_BEAM_6, INPUT_PULLUP);
+  reed_last_raw = digitalRead(PIN_BEAM_6); // 0 when closed, 1 when open
+  reed_stable   = reed_last_raw;
+  reed_t_change = millis();
+
+  // Tech booth light output
+  pinMode(PIN_TECHLIGHT, OUTPUT);
+  techlight_write_hw(false); // start OFF
+
+  console_log("Inputs: beams B0..B5 debounced + rearm, B6 reed drives tech light");
+  console_log("Map: B0=Franken, B1=Intro, B2=Blood, B3=Graveyard, B4=Mirror, B5=Exit, B6=TechLight");
+}
+
+void inputs_update() {
+  unsigned long now = millis();
+
+  // Beams 0..5: edge detect break with rearm
+  for (uint8_t i = 0; i < N_SCENE_BEAMS; ++i) {
+    uint8_t r = raw_active_low(BEAM_PINS[i]);
+    if (r != last_raw[i]) {
+      last_raw[i] = r;
+      t_change[i] = now;
+    }
+    if (now - t_change[i] >= DEBOUNCE_MS) {
+      if (stable_state[i] != r) {
+        stable_state[i] = r;
+        // transition to 1 means newly broken
+        if (r == 1) {
+          if (now - t_last_fire[i] >= REARM_MS) {
+            t_last_fire[i] = now;
+            console_log(String("TRIP ") + BEAM_NAMES[i]);
+            scene_for_beam(i);
+          }
+        }
+      }
+    }
+  }
+
+  // Beam 6: reed switch debounced
+  uint8_t reed_raw = digitalRead(PIN_BEAM_6); // 0 = closed, 1 = open (due to pullup)
+  if (reed_raw != reed_last_raw) {
+    reed_last_raw = reed_raw;
+    reed_t_change = now;
+  }
+  if (now - reed_t_change >= DEBOUNCE_MS) {
+    if (reed_stable != reed_raw) {
+      reed_stable = reed_raw;
+      // No immediate write here; final drive happens below respecting override and block
+    }
+  }
+
+  // Final tech light drive with priority
+  // 1) If Intro/Cue kill window is active, force OFF
+  // 2) Else console override ON/OFF if set
+  // 3) Else follow reed: closed = ON, open = OFF
+  bool want_on = false;
+  if (now < gLightBlockUntil) {
+    want_on = false;
+  } else if (gLightOverride == 1) {
+    want_on = true;
+  } else if (gLightOverride == 0) {
+    want_on = false;
+  } else {
+    want_on = (reed_stable == LOW); // closed contact turns light ON
+  }
+
+  if (want_on != gLightIsOn) {
+    techlight_write_hw(want_on);
+    if (gLightOverride == -1) {
+      console_log(want_on ? "TechLight ON (reed)" : "TechLight OFF (reed)");
+    } else {
+      console_log(want_on ? "TechLight ON (override)" : "TechLight OFF (override)");
+    }
+  }
 }

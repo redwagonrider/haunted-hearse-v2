@@ -1,35 +1,15 @@
-// triggers.hpp
 #pragma once
 #include <Arduino.h>
 
-// Four trigger channels from Mega to Pi via optocouplers
-// Mega pins 22..25 drive opto LEDs through current-limit resistors.
-// Pi side should use pull-ups on GPIO inputs and detect edges in FPP.
+// Initialize Mega -> Pi GPIO trigger outputs (optocouplers or relays)
+void triggers_begin();
 
-// Logical trigger IDs
-enum TriggerId : uint8_t {
-  TRIG_BLOODROOM = 0,   // Pi GPIO17
-  TRIG_GRAVEYARD = 1,   // Pi GPIO27
-  TRIG_FURROOM   = 2,   // Pi GPIO22
-  TRIG_FRANKENLAB= 3    // Pi GPIO23
-};
+// Pulse by index (0..3). Returns true on success.
+bool triggers_pulse(uint8_t idx, uint16_t ms = 100);
 
-// Configuration
-struct TriggerConfig {
-  uint16_t pulse_ms;    // duration of HIGH pulse on Mega pin
-  uint16_t lockout_ms;  // minimum time after a fire where channel cannot retrigger
-};
+// Pulse by uppercase name: BLOOD, GRAVE, FUR, FRANKEN
+// Returns true on success.
+bool triggers_pulse_by_name(const String& upname);
 
-// Initialize pins and timing
-void triggers_begin(const TriggerConfig& cfg = {100, 300});
-
-// Fire a trigger. Returns true if accepted, false if locked out or already active.
-bool triggers_fire(TriggerId id);
-
-// Call often in loop to time out pulses and enforce lockouts
-void triggers_update();
-
-// Optional: map helpers
-uint8_t triggers_pin_for(TriggerId id);    // Arduino pin number (22..25)
-uint8_t triggers_pi_gpio_for(TriggerId id); // Pi GPIO for your docs
-const char* triggers_name_for(TriggerId id);
+// Print mapping to Serial
+void triggers_print_map();

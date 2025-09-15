@@ -1,39 +1,33 @@
 #pragma once
 #include <Arduino.h>
 
-/* ===== Status LEDs =====
-   Active HIGH. Wire each LED with a series resistor to these pins.
-   Green = ARMED, Red = HOLD, Yellow = COOLDOWN
-*/
-#define LED_ARMED       10   // green
-#define LED_HOLD        11   // red
-#define LED_COOLDOWN    12   // yellow
+// ================= Sensors =================
+// Beams 0..5 (active LOW with INPUT_PULLUP)
+#define PIN_BEAM_0 2   // Frankenphones Lab
+#define PIN_BEAM_1 3   // Intro / Cue Card -> Blackout
+#define PIN_BEAM_2 4   // Blood Room
+#define PIN_BEAM_3 5   // Graveyard
+#define PIN_BEAM_4 7   // Mirror Room
+#define PIN_BEAM_5 9   // Exit
 
-/* ===== Actuators =====
-   PIN_MAGNET_CTRL drives the MOSFET gate for the electromagnet
-   PIN_BUZZER drives the passive piezo buzzer
-*/
+// Beam 6: Adafruit 375 reed switch (active when CLOSED)
+// Wire one lead to GND and the other to this pin. Use INPUT_PULLUP.
+#define PIN_BEAM_6 30  // Tech booth light switch
+
+// ================= Actuators =================
 #define PIN_MAGNET_CTRL 6
 #define PIN_BUZZER      8
 
-/* ===== Break-beam sensors =====
-   INPUT_PULLUP. Active LOW when the beam is broken.
-   You have six beams available on these pins.
-*/
-#define PIN_BEAM_0      2
-#define PIN_BEAM_1      3
-#define PIN_BEAM_2      4
-#define PIN_BEAM_3      5
-#define PIN_BEAM_4      7
-#define PIN_BEAM_5      9
+// Status LEDs
+#define LED_ARMED    10  // green
+#define LED_HOLD     11  // red
+#define LED_COOLDOWN 12  // yellow
 
-/* ===== I2C display =====
-   Adafruit 4 digit alphanumeric backpack at 0x70
-   Mega SDA = 20, SCL = 21 (hardware I2C)
-*/
+// Tech booth light output (drives MOSFET or relay)
+// Active HIGH: write HIGH to turn light ON.
+#define PIN_TECHLIGHT 26
+#define TECHLIGHT_ACTIVE_HIGH 1  // set to 0 if your relay is active LOW
 
-/* ===== Optional Pi trigger outputs (present but not used by Frankenphone) ===== */
-#define PIN_TRIG0       22   // Pi GPIO17
-#define PIN_TRIG1       23   // Pi GPIO27
-#define PIN_TRIG2       24   // Pi GPIO22
-#define PIN_TRIG3       25   // Pi GPIO23
+// I2C pins for Mega 2560 (hardware-defined)
+#define I2C_SDA_PIN 20
+#define I2C_SCL_PIN 21
