@@ -158,3 +158,7 @@ void settings_print(Stream& s){
     s.println(G.beam_scene[i]);
   }
 }
+// Stub init if no callbacks needed yet
+void settings_init() {
+  settings_begin(nullptr, nullptr, nullptr, nullptr, nullptr);
+}
