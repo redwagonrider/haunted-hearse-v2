@@ -4,7 +4,8 @@
 #include "pins.hpp"
 #include "triggers.hpp"
 #include "scenes/scene_frankenphone.hpp"
-#include "techlight.hpp"   // NEW
+#include "techlight.hpp"
+#include "inputs.hpp"
 
 // scene-side mute bridge
 extern "C" void frankenphone_set_mute(bool m);
@@ -19,7 +20,8 @@ static void cmd_help() {
   Serial.println(F("Commands:"));
   Serial.println(F("  ? | HELP           show this help"));
   Serial.println(F("  VER                print firmware version"));
-  Serial.println(F("  CFG                print pin map and live states"));
+  Serial.println(F("  CFG                print pins and live states"));
+  Serial.println(F("  MAP                print beam -> scene map"));
   Serial.println(F("  STATE 16           force Frankenphones Lab now"));
   Serial.println(F("  QUIET ON|OFF       mute or unmute buzzer"));
   Serial.println(F("  TRIG LIST          show GPIO trigger mapping"));
@@ -93,7 +95,6 @@ static void cmd_trig(const String& s) {
     return;
   }
 
-  // Expect TRIG <NAME>
   int sp = s.indexOf(' ');
   if (sp < 0 || sp+1 >= (int)s.length()) { Serial.println(F("ERR TRIG")); return; }
   String name = s.substring(sp + 1);
@@ -106,32 +107,20 @@ static void cmd_trig(const String& s) {
   }
 }
 
-static void cmd_light(const String& s) {
-  if (s.endsWith(" ON"))    { techlight_override_on();   Serial.println(F("OK LIGHT ON"));    return; }
-  if (s.endsWith(" OFF"))   { techlight_override_off();  Serial.println(F("OK LIGHT OFF"));   return; }
-  if (s.endsWith(" AUTO"))  { techlight_override_auto(); Serial.println(F("OK LIGHT AUTO"));  return; }
-  if (s.endsWith(" TOGGLE")){
-    if (techlight_is_on()) { techlight_override_off(); Serial.println(F("OK LIGHT OFF")); }
-    else                   { techlight_override_on();  Serial.println(F("OK LIGHT ON"));  }
-    return;
-  }
-  Serial.println(F("ERR LIGHT use ON|OFF|AUTO|TOGGLE"));
-}
-
 static void handle_line(String line) {
   line.trim();
   if (line.length() == 0) return;
-  Serial.print(F("> ")); Serial.println(line);  // echo
+  Serial.print(F("> ")); Serial.println(line);
 
   String up = line; up.toUpperCase();
 
   if (up == "?" || up == "HELP") { cmd_help(); return; }
   if (up == "VER")               { cmd_ver();  return; }
   if (up == "CFG")               { cmd_cfg();  return; }
+  if (up == "MAP")               { inputs_print_map(); Serial.println(F("OK MAP")); return; }
   if (up.startsWith("STATE"))    { cmd_state(up); return; }
   if (up.startsWith("QUIET"))    { cmd_quiet(up); return; }
   if (up.startsWith("TRIG"))     { cmd_trig(up); return; }
-  if (up.startsWith("LIGHT"))    { cmd_light(up); return; }
 
   Serial.println(F("ERR unknown"));
 }

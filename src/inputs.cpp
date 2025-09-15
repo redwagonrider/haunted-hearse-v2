@@ -2,7 +2,8 @@
 #include <Arduino.h>
 #include "pins.hpp"
 #include "console.hpp"
-#include "techlight.hpp"   // NEW
+#include "techlight.hpp"
+#include "inputs.hpp"
 
 // Scene entry points
 #include "scenes/scene_frankenphone.hpp"
@@ -144,31 +145,41 @@ void inputs_update() {
   if (now - reed_t_change >= DEBOUNCE_MS) {
     if (reed_stable != reed_raw) {
       reed_stable = reed_raw;
-      // No immediate write here; final drive happens below respecting override and block
+      // no immediate write; final drive below respects override and intro kill
     }
   }
 
-  // Final tech light drive with priority
-  // 1) If Intro/Cue kill window is active, force OFF
-  // 2) Else console override ON/OFF if set
-  // 3) Else follow reed: closed = ON, open = OFF
+  // Final tech light drive with priority rules
   bool want_on = false;
   if (now < gLightBlockUntil) {
-    want_on = false;
+    want_on = false;                       // Intro/Cue kill window
   } else if (gLightOverride == 1) {
-    want_on = true;
+    want_on = true;                        // console override ON
   } else if (gLightOverride == 0) {
-    want_on = false;
+    want_on = false;                       // console override OFF
   } else {
-    want_on = (reed_stable == LOW); // closed contact turns light ON
+    want_on = (reed_stable == LOW);        // AUTO: reed closed = ON
   }
 
   if (want_on != gLightIsOn) {
     techlight_write_hw(want_on);
-    if (gLightOverride == -1) {
+    if (gLightOverride == -1 && now >= gLightBlockUntil) {
       console_log(want_on ? "TechLight ON (reed)" : "TechLight OFF (reed)");
-    } else {
+    } else if (gLightOverride != -1) {
       console_log(want_on ? "TechLight ON (override)" : "TechLight OFF (override)");
     }
   }
+}
+
+// ====== Mapping printer for console ======
+void inputs_print_map() {
+  Serial.println(F("=== Beam -> Scene Map ==="));
+  Serial.println(F("B0 D2  -> Frankenphones Lab"));
+  Serial.println(F("B1 D3  -> Intro / Cue Card (kills TechLight 5 s)"));
+  Serial.println(F("B2 D4  -> Blood Room"));
+  Serial.println(F("B3 D5  -> Graveyard"));
+  Serial.println(F("B4 D7  -> Mirror Room"));
+  Serial.println(F("B5 D9  -> Exit"));
+  Serial.println(F("B6 D30 -> TechLight reed  | Output D26"));
+  Serial.println(F("Debounce 30 ms, Re-arm 20 s for B0..B5"));
 }
