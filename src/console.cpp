@@ -1,289 +1,95 @@
+// src/console.cpp
 #include <Arduino.h>
 #include "console.hpp"
-#include "settings.hpp"  // SAVE/LOAD, versions, reset
-// main.cpp provides this to re-apply mapping after edits:
-extern void apply_mapping_from_settings();
+#include "pins.hpp"
+#include "scenes/scene_frankenphone.hpp"
 
-// === Callback storage (wired by console_attach in main.cpp) ===
-static void (*cbSetHold)(uint32_t)   = nullptr;
-static void (*cbSetCool)(uint32_t)   = nullptr;
-static void (*cbSetBright)(uint8_t)  = nullptr;
-static void (*cbForce)(int)          = nullptr;
-static void (*cbPrint)()             = nullptr;
+// scene-side mute bridge
+extern "C" void frankenphone_set_mute(bool m);
 
-// === Device hooks (wired by console_attach_devices in main.cpp) ===
-static void (*cbGoProOn)()         = nullptr;
-static void (*cbGoProOff)()        = nullptr;
-static void (*cbGoProMs)(uint32_t) = nullptr;
-static void (*cbAudioOn)()         = nullptr;
-static void (*cbAudioOff)()        = nullptr;
-static void (*cbAudioMs)(uint32_t) = nullptr;
+static String inbuf;
 
-// === Serial config ===
-static unsigned long g_baud = 115200;
-static String g_line;
-
-// === Log mode flag ===
-static bool g_log = false;
-bool console_should_log(){ return g_log; }
-
-// --- helpers ---
-static String toUpperTrim(const String& in){
-  String s = in; s.trim(); s.toUpperCase(); return s;
+// helpers
+static void print_kv(const __FlashStringHelper* k, int v) {
+  Serial.print(k); Serial.println(v);
 }
 
-static long parseLong(const String& s, bool& ok){
-  char *end=nullptr;
-  long v = strtol(s.c_str(), &end, 10);
-  ok = (end && *end == '\0');
-  return v;
-}
-
-static int nameToSceneCode(const String& n){
-  String arg = toUpperTrim(n);
-  if      (arg == "STANDBY")        return 0;
-  else if (arg == "PHONELOADING")   return 10;
-  else if (arg == "INTRO" || arg == "INTRO CUE" || arg == "INTRO_CUE") return 11;
-  else if (arg == "BLOOD" || arg == "BLOODROOM" || arg == "BLOOD_ROOM") return 12;
-  else if (arg == "GRAVE" || arg == "GRAVEYARD") return 13;
-  else if (arg == "FUR" || arg == "FURROOM" || arg == "FUR_ROOM") return 14;
-  else if (arg == "ORCA" || arg == "ORCADINO" || arg == "ORCA_DINO") return 15;
-  else if (arg == "LAB" || arg == "FRANKENLAB" || arg == "FRANKENPHONES" || arg == "FRANKENPHONES LAB") return 16;
-  else if (arg == "MIRROR" || arg == "MIRRORROOM" || arg == "MIRROR_ROOM") return 17;
-  else if (arg == "EXIT" || arg == "EXITHOLE" || arg == "EXIT_HOLE") return 18;
-  return -1;
-}
-
-void console_begin(unsigned long baud){
-  g_baud = baud;
-  Serial.begin(g_baud);
-  g_line.reserve(96);
-  delay(50);
-  Serial.println(F("\n[HH Console Ready] Type ? for help"));
-}
-
-void console_attach(void (*setHold)(uint32_t),
-                    void (*setCool)(uint32_t),
-                    void (*setBright)(uint8_t),
-                    void (*forceState)(int),
-                    void (*printStatus)()){
-  cbSetHold   = setHold;
-  cbSetCool   = setCool;
-  cbSetBright = setBright;
-  cbForce     = forceState;
-  cbPrint     = printStatus;
-}
-
-void console_attach_devices(
-  void (*gopro_on)(),
-  void (*gopro_off)(),
-  void (*gopro_ms)(uint32_t),
-  void (*audio_on)(),
-  void (*audio_off)(),
-  void (*audio_ms)(uint32_t)
-){
-  cbGoProOn  = gopro_on;
-  cbGoProOff = gopro_off;
-  cbGoProMs  = gopro_ms;
-  cbAudioOn  = audio_on;
-  cbAudioOff = audio_off;
-  cbAudioMs  = audio_ms;
-}
-
-static void printHelp(){
+// commands
+static void cmd_help() {
   Serial.println(F("Commands:"));
-  Serial.println(F("  ? or HELP             - show this help"));
-  Serial.println(F("  VER                   - show firmware/EEPROM versions"));
-  Serial.println(F("  CFG                   - show status/settings"));
-  Serial.println(F("  MAP                   - print beam->scene mapping"));
-  Serial.println(F("  HOLD <ms>             - set hold duration"));
-  Serial.println(F("  COOL <ms>             - set cooldown/lockout"));
-  Serial.println(F("  BRIGHT <0..15>        - set display brightness"));
-  Serial.println(F("  SDEB <ms>             - set debounce (0..2000)"));
-  Serial.println(F("  SREARM <ms>           - set re-arm (0..600000)"));
-  Serial.println(F("  SAVE / LOAD           - EEPROM persist / restore"));
-  Serial.println(F("  RESET                 - factory reset (defaults)"));
-  Serial.println(F("  STATE <code>          - quick force (0/1/2 or 10..18)"));
-  Serial.println(F("  SCENE <name>          - force by name"));
-  Serial.println(F("  BMAP <idx> <pin>      - set beam index->Arduino pin"));
-  Serial.println(F("  BSCENE <idx> <name|code> - set beam index->scene"));
-  Serial.println(F("  LOG ON|OFF            - toggle event logging"));
-  Serial.println(F("  GOPRO ON|OFF          - power GoPro (USB 5V)"));
-  Serial.println(F("  GOPRO <ms>            - record GoPro for duration"));
-  Serial.println(F("  AUDIO ON|OFF          - power Tascam recorder (USB 5V)"));
-  Serial.println(F("  AUDIO <ms>            - record Audio for duration"));
+  Serial.println(F("  ? | HELP         show this help"));
+  Serial.println(F("  VER              print firmware version"));
+  Serial.println(F("  CFG              print pin map and live states"));
+  Serial.println(F("  STATE 16         force Frankenphones Lab now"));
+  Serial.println(F("  QUIET ON|OFF     mute or unmute buzzer"));
 }
 
-void console_update(){
-  while (Serial.available()){
+static void cmd_ver() {
+  Serial.println(F("Haunted Hearse build:"));
+  Serial.println(F("  frankenphone-locked-2025-09-14-09sA"));
+  Serial.println(F("OK VER"));
+}
+
+static void cmd_cfg() {
+  Serial.println(F("=== CFG ==="));
+  Serial.println(F("Pins"));
+  Serial.println(F("  Beam0: D2 (INPUT_PULLUP, active LOW)"));
+  print_kv(F("  Magnet D"), PIN_MAGNET_CTRL);
+  print_kv(F("  Buzzer D"), PIN_BUZZER);
+  print_kv(F("  LED Green D"), LED_ARMED);
+  print_kv(F("  LED Red   D"), LED_HOLD);
+  print_kv(F("  LED Yell  D"), LED_COOLDOWN);
+  Serial.println(F("  I2C display 0x70 on SDA=20 SCL=21"));
+  Serial.println(F("States"));
+  Serial.print(F("  Beam0: ")); Serial.println(digitalRead(PIN_BEAM_0) == LOW ? F("BROKEN") : F("CLEAR"));
+  Serial.print(F("  Magnet: ")); Serial.println(digitalRead(PIN_MAGNET_CTRL) ? F("ON") : F("OFF"));
+  Serial.println(F("  Note: buzzer is tonal and not readable via digitalRead"));
+  Serial.println(F("OK CFG"));
+}
+
+static void cmd_state(const String& s) {
+  int sp = s.indexOf(' ');
+  if (sp < 0) { Serial.println(F("ERR STATE")); return; }
+  int code = s.substring(sp + 1).toInt();
+  if (code == 16) {
+    scene_frankenphone();
+    Serial.println(F("OK STATE 16"));
+  } else {
+    Serial.println(F("ERR STATE unsupported"));
+  }
+}
+
+static void cmd_quiet(const String& s) {
+  if (s.endsWith(" ON"))  { frankenphone_set_mute(true);  Serial.println(F("OK QUIET ON"));  return; }
+  if (s.endsWith(" OFF")) { frankenphone_set_mute(false); Serial.println(F("OK QUIET OFF")); return; }
+  Serial.println(F("ERR QUIET use ON or OFF"));
+}
+
+static void handle_line(String line) {
+  line.trim();
+  if (line.length() == 0) return;
+  Serial.print(F("> ")); Serial.println(line);  // echo
+
+  String up = line; up.toUpperCase();
+
+  if (up == "?" || up == "HELP") { cmd_help(); return; }
+  if (up == "VER")               { cmd_ver();  return; }
+  if (up == "CFG")               { cmd_cfg();  return; }
+  if (up.startsWith("STATE"))    { cmd_state(up); return; }
+  if (up.startsWith("QUIET"))    { cmd_quiet(up); return; }
+
+  Serial.println(F("ERR unknown"));
+}
+
+// public API
+void console_update() {
+  while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\r') continue;
-    if (c != '\n'){
-      g_line += c;
-      if (g_line.length() > 200) g_line = "";
-      continue;
-    }
-
-    // full line received
-    String line = g_line; g_line = "";
-    String uc = toUpperTrim(line);
-    if (uc.length() == 0) continue;
-
-    // HELP / ?
-    if (uc == "?" || uc == "HELP"){ printHelp(); continue; }
-
-    // VER
-    if (uc == "VER"){
-      uint16_t magic; uint8_t eep, fw;
-      settings_versions(magic, eep, fw);
-      Serial.print(F("FW=")); Serial.print(fw);
-      Serial.print(F(" EEP_VER=")); Serial.print(eep);
-      Serial.print(F(" MAGIC=0x")); Serial.println(magic, HEX);
-      continue;
-    }
-
-    // CFG / MAP
-    if (uc == "CFG"){ if (cbPrint) cbPrint(); else Serial.println(F("No printer")); continue; }
-    if (uc == "MAP"){ if (cbPrint) cbPrint(); Serial.println(F("OK MAP")); continue; }
-
-    // SAVE / LOAD / RESET
-    if (uc == "SAVE"){ settings_save(); Serial.println(F("OK SAVE")); continue; }
-    if (uc == "LOAD"){ if (settings_load()) Serial.println(F("OK LOAD")); else Serial.println(F("ERR LOAD")); continue; }
-    if (uc == "RESET"){
-      settings_reset_defaults(true); // reset & SAVE
-      apply_mapping_from_settings();
-      Serial.println(F("OK RESET (defaults applied + saved)"));
-      continue;
-    }
-
-    // LOG ON|OFF
-    if (uc.startsWith("LOG ")){
-      String a = toUpperTrim(line.substring(4));
-      if (a == "ON"){ g_log = true; Serial.println(F("OK LOG ON")); }
-      else if (a == "OFF"){ g_log = false; Serial.println(F("OK LOG OFF")); }
-      else Serial.println(F("ERR LOG ON|OFF"));
-      continue;
-    }
-
-    // HOLD / COOL / BRIGHT
-    if (uc.startsWith("HOLD ")){
-      bool ok=false; long v = parseLong(line.substring(5), ok);
-      if (ok && v >= 0){ if (cbSetHold) cbSetHold((uint32_t)v); Serial.println(F("OK HOLD")); }
-      else Serial.println(F("ERR HOLD <ms>"));
-      continue;
-    }
-    if (uc.startsWith("COOL ")){
-      bool ok=false; long v = parseLong(line.substring(5), ok);
-      if (ok && v >= 0){ if (cbSetCool) cbSetCool((uint32_t)v); Serial.println(F("OK COOL")); }
-      else Serial.println(F("ERR COOL <ms>"));
-      continue;
-    }
-    if (uc.startsWith("BRIGHT ")){
-      bool ok=false; long v = parseLong(line.substring(7), ok);
-      if (ok && v >= 0 && v <= 15){ if (cbSetBright) cbSetBright((uint8_t)v); Serial.println(F("OK BRIGHT")); }
-      else Serial.println(F("ERR BRIGHT 0..15"));
-      continue;
-    }
-
-    // SDEB / SREARM
-    if (uc.startsWith("SDEB ")){
-      bool ok=false; long v = parseLong(line.substring(5), ok);
-      if (ok && v >= 0 && v <= 2000){ settings_set_debounce((uint16_t)v); Serial.println(F("OK SDEB")); }
-      else Serial.println(F("ERR SDEB 0..2000"));
-      continue;
-    }
-    if (uc.startsWith("SREARM ")){
-      bool ok=false; long v = parseLong(line.substring(7), ok);
-      if (ok && v >= 0 && v <= 600000){ settings_set_rearm((uint32_t)v); Serial.println(F("OK SREARM")); }
-      else Serial.println(F("ERR SREARM 0..600000"));
-      continue;
-    }
-
-    // STATE <code>
-    if (uc.startsWith("STATE ")){
-      bool ok=false; long v = parseLong(line.substring(6), ok);
-      if (ok){ if (cbForce) cbForce((int)v); Serial.println(F("OK STATE")); }
-      else Serial.println(F("ERR STATE <int>"));
-      continue;
-    }
-
-    // SCENE <name>
-    if (uc.startsWith("SCENE ")){
-      int code = nameToSceneCode(line.substring(6));
-      if (code >= 0){ if (cbForce) cbForce(code); Serial.println(F("OK SCENE")); }
-      else Serial.println(F("ERR SCENE name unknown"));
-      continue;
-    }
-
-    // BMAP <idx> <pin>
-    if (uc.startsWith("BMAP ")){
-      String rest = line.substring(5); rest.trim();
-      int sp = rest.indexOf(' ');
-      if (sp < 0){ Serial.println(F("ERR BMAP <idx> <pin>")); continue; }
-      String sIdx = rest.substring(0, sp);
-      String sPin = rest.substring(sp+1);
-      bool ok1=false, ok2=false;
-      long idx = parseLong(sIdx, ok1);
-      long pin = parseLong(sPin, ok2);
-      if (!ok1 || !ok2 || idx < 0 || idx > 5 || pin < 0 || pin > 69){
-        Serial.println(F("ERR BMAP idx=0..5 pin=0..69"));
-        continue;
-      }
-      settings_set_beam_pin((uint8_t)idx, (uint8_t)pin);
-      apply_mapping_from_settings();
-      Serial.println(F("OK BMAP"));
-      continue;
-    }
-
-    // BSCENE <idx> <name|code>
-    if (uc.startsWith("BSCENE ")){
-      String rest = line.substring(7); rest.trim();
-      int sp = rest.indexOf(' ');
-      if (sp < 0){ Serial.println(F("ERR BSCENE <idx> <name|code>")); continue; }
-      String sIdx = rest.substring(0, sp);
-      String sArg = rest.substring(sp+1);
-      bool ok=false; long idx = parseLong(sIdx, ok);
-      if (!ok || idx < 0 || idx > 5){ Serial.println(F("ERR BSCENE idx=0..5")); continue; }
-
-      int code;
-      bool numOK=false; long asNum = parseLong(sArg, numOK);
-      if (numOK) code = (int)asNum;
-      else       code = nameToSceneCode(sArg);
-
-      if (code < 0 || code > 255){ Serial.println(F("ERR BSCENE name/code invalid")); continue; }
-      settings_set_beam_scene((uint8_t)idx, (uint8_t)code);
-      apply_mapping_from_settings();
-      Serial.println(F("OK BSCENE"));
-      continue;
-    }
-
-    // GOPRO commands
-    if (uc == "GOPRO ON"){ if (cbGoProOn) cbGoProOn(); Serial.println(F("OK GOPRO ON")); continue; }
-    if (uc == "GOPRO OFF"){ if (cbGoProOff) cbGoProOff(); Serial.println(F("OK GOPRO OFF")); continue; }
-    if (uc.startsWith("GOPRO ")){
-      bool ok=false; long v = parseLong(line.substring(6), ok);
-      if (ok && v > 0){ if (cbGoProMs) cbGoProMs((uint32_t)v); Serial.println(F("OK GOPRO ms")); }
-      else Serial.println(F("ERR GOPRO <ms>"));
-      continue;
-    }
-
-    // AUDIO commands
-    if (uc == "AUDIO ON"){ if (cbAudioOn) cbAudioOn(); Serial.println(F("OK AUDIO ON")); continue; }
-    if (uc == "AUDIO OFF"){ if (cbAudioOff) cbAudioOff(); Serial.println(F("OK AUDIO OFF")); continue; }
-    if (uc.startsWith("AUDIO ")){
-      bool ok=false; long v = parseLong(line.substring(6), ok);
-      if (ok && v > 0){ if (cbAudioMs) cbAudioMs((uint32_t)v); Serial.println(F("OK AUDIO ms")); }
-      else Serial.println(F("ERR AUDIO <ms>"));
-      continue;
-    }
-
-    // Unknown
-    Serial.println(F("ERR ? for help"));
+    if (c == '\n') { handle_line(inbuf); inbuf = ""; }
+    else if (inbuf.length() < 96) inbuf += c;
   }
 }
-void console_log(const String& msg) {
-  if (console_should_log()) {
-    Serial.print(F("[LOG] "));
-    Serial.println(msg);
-  }
-}
+
+void console_log(const char* msg)   { Serial.println(msg); }
+void console_log(const String& msg) { Serial.println(msg); }
