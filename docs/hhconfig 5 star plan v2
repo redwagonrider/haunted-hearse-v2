@@ -1,0 +1,184 @@
+# Haunted Hearse — hhconfig 5-Star Plan (updated 2025-09-15)
+
+**Goal:** Hybrid show control with rock solid reliability.  
+**Architecture:** xLights → FPP (Pi) for playback; Falcon F16v5 for pixels; Arduino Mega for sensors and props; Pi GPIO events triggered from Mega.
+
+---
+
+## Phase 0: Freeze and Baseline
+- [ ] Lock module APIs (`effects`, `inputs`, `scenes`, `display`, `settings`, `console`, `gopro`, `recorder`)
+- [ ] Tag repo: **v0.4-baseline**
+- [ ] Document current pin map and EEPROM defaults in `docs/pinmap.md`  
+**Done test:** Clean build; `CFG` prints expected pins; `STATE 16` runs FrankenLab end to end; re-arm works.
+
+---
+
+## Phase 0.5: Display Arbiter and Telemetry
+- [x] Add **display arbiter** so scenes must acquire the 4-digit display and idle text only draws when free
+- [x] Freeze **Frankenphones Lab** sequence and timings  
+  - Hold 8 s total, magnet on first 5 s  
+  - Red LED pulses during hold  
+  - Modem sound plays across hold (Option A, about 9 s, quieter)  
+  - Display order in hold: two flashes of `----`, scroll `SYSTEM OVERRIDE`, scroll 16 digits, flash `MMYY`, scroll `PIN` plus 3 digits, scroll 5-digit ZIP once  
+  - Cooldown 20 s: yellow LED flicker, screen cycles `ACES GRTD DONE OPEN OHIO` with a couple of `PIN` flashes and 3 digits
+- [x] Serial Studio v3 project confirmed  
+  - Frame format: `/*ms,scene,phase,beam,magnet,buzzer,R,G,B*/`  
+  - Dashboard shows scene and I/O without extra glue  
+**Done test:** Serial Studio plots tick live; scene labels change on phase transitions; console still responds.
+
+---
+
+## Phase 1: Power Hardening
+- [ ] Separate fused branches: **Falcon / Pi / Mega plus props** with individual switches
+- [ ] Install **TVS** on 12 V bus and **automotive buck(s)** for 5 V at or below 60 percent load
+- [ ] Add **bulk caps**  
+  - 12 V: 470–1000 µF at injection points  
+  - 5 V: 1000–2200 µF near magnet, display, Mega
+- [ ] Single **star ground** bus, short high current returns  
+**Done test:** Worst case load gives farthest pixel drop under **0.8 V**, Pi stays up, no prop glitch.
+
+---
+
+## Phase 2: Wiring and Enclosures
+- [ ] Stranded silicone wire, ferrules under screws, strain relief
+- [ ] Separate power and signal runs, twist I2C and sensors, ferrites on buzzer and magnet
+- [ ] Mount Pi, Falcon, Mega in enclosures with grommets and clamps
+- [ ] Label all harnesses; export `docs/harness-map.pdf`  
+**Done test:** Tug test passes, I2C stable, labeled runs identifiable at a glance.
+
+---
+
+## Phase 3: GPIO Trigger Backbone (Mega to Pi via Optos)
+- [ ] Install **PC817** optocoupler board; Mega D22–D25 to opto in; opto out to Pi GPIO with pull ups
+- [ ] Firmware: 100 ms HIGH pulse per scene trigger with at least 300 ms lockout
+- [ ] FPP: Input Triggers map GPIO edges to Events  
+**Done test:** Beam break to correct Event in **150 ms or less** confirmed in FPP logs and overlay.
+
+**GPIO to Event map (fill):**
+- [ ] GPIO17 to `Start_BloodRoom`
+- [ ] GPIO27 to `Start_Graveyard`
+- [ ] GPIO22 to `Start_FurRoom`
+- [ ] GPIO23 to `Start_FrankenLab`
+- [ ] Optional: add Mirror and Exit
+
+---
+
+## Phase 3.5: Local Beams to Scenes and Tech Light
+- [x] Beam to scene map and pins  
+  - B0 Frankenphones Lab on **D2**  
+  - B1 Intro and Cue Card then blackout on **D3**  
+  - B2 Blood Room on **D4**  
+  - B3 Graveyard on **D5**  
+  - B4 Mirror Room on **D7**  
+  - B5 Exit on **D9**  
+  - B6 Tech booth reed on **D30**
+- [x] Outputs  
+  - Magnet MOSFET **D6**  
+  - Buzzer **D8**  
+  - LEDs: green **D10**, red **D11**, yellow **D12**  
+  - I2C display at 0x70 on SDA **D20** and SCL **D21**  
+  - TechLight output **D26** active high unless configured otherwise
+- [x] TechLight rules  
+  - Modes: AUTO, FORCE ON, FORCE OFF  
+  - Operator overrides always win  
+  - Intro and Cue force TechLight OFF for at least 5 s, then normal rules resume  
+**Done test:** `TL ON`, `TL OFF`, `TL AUTO` behave; B6 reed drives TechLight in AUTO; Intro kill enforces 5 s dark.
+
+---
+
+## Phase 4: Playback Model (Hybrid)
+- [ ] Upload `theme_loop.mp3` to FPP, create looping **Ride_BG** playlist
+- [ ] Build per room effect sequences in xLights without audio and export to FPP as `fx_*.fseq`
+- [ ] Create FPP Events to start or stop overlays; optional stingers that pause theme then play then resume  
+**Done test:** Trigger three rooms in a row, theme stays continuous, overlays start and stop cleanly, no double plays.
+
+---
+
+## Phase 5: Props Isolation and Noise
+- [ ] Separate 5 V props rail from 5 V logic or add LC filter
+- [ ] Confirm flyback diode on magnet driver, ferrite on magnet leads, shorten I2C where possible  
+**Done test:** No audible hum with buzzer, display never corrupts during magnet switching.
+
+---
+
+## Phase 6: Software Robustness
+- [ ] Enable watchdog on Mega and heartbeat LED
+- [ ] FPP auto starts playlist at boot; service auto restarts on hang
+- [ ] EEPROM saves with CRC; `SAVE`, `LOAD`, `RESET` verified
+- [ ] Print firmware and config versions at boot and on `VER`  
+**Done test:** Power cycle each box alone and all return to Ready with no manual clicks.
+
+---
+
+## Phase 7: Redundancy and Brown Out Resilience
+- [ ] Add Pi UPS or supercap HAT or clean 5 V bank to ride through dips
+- [ ] Add low voltage disconnect on 12 V to protect battery
+- [ ] Mirror sequences on SD and USB; fallback Event if no triggers in N minutes  
+**Done test:** Simulated 1–2 s 12 V dip and Pi stays up; show falls back gracefully when triggers stop.
+
+---
+
+## Phase 8: Ops Playbook
+- [ ] Create preflight card with IPs, fuses, checks, console cheats in `docs/ops-card.md`
+- [ ] Define fallbacks: Falcon Test Mode, Standby Lights, theme on USB speaker
+- [ ] Pack spares: Pi SD, Mega, opto, relay, buck, fuses, two beam pairs, MOSFET, caps, pigtails  
+**Done test:** New operator runs preflight and three cycles without help.
+
+---
+
+## Phase 9: Dress Rehearsal and Burn In
+- [ ] Three back to back full runs; log voltages, latency, false triggers
+- [ ] Heat soak with lids on; confirm no throttling or resets  
+**Done test:** Zero critical faults; latency **150 ms or less**; false triggers under **1 per hour**.
+
+---
+
+## Acceptance Targets (5-Star)
+- 12 V sag under worst hit under **0.8 V** at far injection; Pi stays up  
+- Event latency **150 ms or less** from beam to overlay  
+- Cold boot to Ready **60 s or less**; power blip recovery **15 s or less**  
+- Single fault tolerance: loss of Wi-Fi, one beam, or one buck and show still runs with reduced features
+
+---
+
+## Display and Telemetry Reference
+- Arbiter priorities in use  
+  - FRANK equals 10  
+  - BLOOD equals 8  
+  - Idle text uses `display_idle` and never preempts owners  
+  - Note: physical order is Blood first, so no change needed to priorities
+- Serial frame example/ 1000,frankenphone,HOLD,0,1,0,176,32,0/
+
+- Serial Studio project file: `hauntedhearse_project_v3.json`
+
+---
+
+## Bill of Materials (delta to reach 5-Star)
+- [ ] PC817 optocoupler board, 4 channel  
+- [ ] Automotive 12 to 5 V buck converters, 3 to 5 A, transient tolerant  
+- [ ] TVS diode for 12 V bus such as SMBJ series  
+- [ ] Low voltage disconnect module  
+- [ ] UPS or supercap HAT for Pi  
+- [ ] Bulk capacitors 470 to 2200 µF mix, ferrites, ferrules, labels  
+- [ ] Enclosures, grommets, clamps
+
+---
+
+## Versioning and Milestones
+- Tag milestones as you complete phases  
+- [ ] `v0.5-power`  
+- [ ] `v0.6-gpio`  
+- [ ] `v0.7-playback`  
+- [ ] `v0.8-props`  
+- [ ] `v0.9-ops`  
+- [ ] `v1.0-showready`  
+- Current work branches include display arbiter, Frankenphones Lab freeze, and Blood screen polish. Latest tag for this line: **v0.6.2-blood-frank-2025-09-15**.
+
+---
+
+## Notes and Scratchpad
+- Fill final **beam to scene** mapping and **GPIO to Event** table as wiring lands
+- FPP Event names in use:  
+`Start_BloodRoom`, `Start_Graveyard`, `Start_FurRoom`, `Start_FrankenLab`, `Start_MirrorRoom`, `Start_ExitHole`
+- Console commands used often:  
+`CFG`, `SAVE`, `LOAD`, `BRIGHT 8`, `HOLD 8000`, `COOL 20000`, `STATE 16`, `TL ON`, `TL OFF`, `TL AUTO`
