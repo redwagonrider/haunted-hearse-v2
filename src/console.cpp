@@ -25,8 +25,8 @@ static void cmd_help() {
   Serial.println(F("  STATE 16           force Frankenphones Lab now"));
   Serial.println(F("  QUIET ON|OFF       mute or unmute buzzer"));
   Serial.println(F("  TRIG LIST          show GPIO trigger mapping"));
-  Serial.println(F("  TRIG <ROOM>        pulse GPIO for BLOOD|GRAVE|FUR|FRANKEN"));
-  Serial.println(F("  TRIG ALL           pulse all in sequence"));
+  Serial.println(F("  TRIG <ROOM>        pulse GPIO for SHOW|BLOOD|GRAVE|FUR|FRANKEN"));
+  Serial.println(F("  TRIG ALL           pulse BLOOD, GRAVE, FUR, FRANKEN in sequence"));
   Serial.println(F("  LIGHT ON|OFF|AUTO|TOGGLE   tech booth light override"));
 }
 

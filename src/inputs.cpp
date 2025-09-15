@@ -4,6 +4,7 @@
 #include "console.hpp"
 #include "techlight.hpp"
 #include "inputs.hpp"
+#include "triggers.hpp"
 
 // Scene entry points
 #include "scenes/scene_frankenphone.hpp"
@@ -39,11 +40,11 @@ static unsigned long reed_t_change = 0;
 
 // Tech light control state
 // -1 = AUTO (follow reed), 0 = FORCE_OFF, 1 = FORCE_ON
-static int8_t gLightOverride = -1;
-static bool   gLightIsOn     = false;
-static unsigned long gLightBlockUntil = 0; // while now < this, force OFF regardless
+static int8_t  gLightOverride     = -1;
+static bool    gLightIsOn         = false;
+// Intro latch: keep lights OFF until reed closes in AUTO or a console override happens
+static bool    gLightIntroLatch   = false;
 
-// Helpers
 static inline uint8_t raw_active_low(uint8_t pin) { return digitalRead(pin) == LOW ? 1 : 0; }
 
 static inline void techlight_write_hw(bool on) {
@@ -56,13 +57,13 @@ static inline void techlight_write_hw(bool on) {
 }
 
 // ====== Techlight API (implementation) ======
-void techlight_override_on()  { gLightOverride = 1;  techlight_write_hw(true);  console_log("TechLight OVERRIDE ON"); }
-void techlight_override_off() { gLightOverride = 0;  techlight_write_hw(false); console_log("TechLight OVERRIDE OFF"); }
-void techlight_override_auto(){ gLightOverride = -1; console_log("TechLight AUTO (follow reed)"); }
-void techlight_scene_intro_kill(uint16_t ms_holdoff) {
+void techlight_override_on()  { gLightOverride = 1;  gLightIntroLatch = false; techlight_write_hw(true);  console_log("TechLight OVERRIDE ON"); }
+void techlight_override_off() { gLightOverride = 0;  /* keep intro latch conceptually irrelevant */ techlight_write_hw(false); console_log("TechLight OVERRIDE OFF"); }
+void techlight_override_auto(){ gLightOverride = -1; /* intro latch may still apply until reed closes */ console_log("TechLight AUTO (follow reed)"); }
+void techlight_scene_intro_kill(uint16_t /*ms_holdoff*/) {
   techlight_write_hw(false);
-  gLightBlockUntil = millis() + ms_holdoff;
-  console_log("TechLight OFF by Intro/Cue");
+  gLightIntroLatch = true; // stays OFF until reed closes in AUTO, or an override ON
+  console_log("TechLight OFF by Intro/Cue until reed closes or override");
 }
 bool techlight_is_on() { return gLightIsOn; }
 const char* techlight_mode_name() {
@@ -76,12 +77,21 @@ const char* techlight_mode_name() {
 // ====== Scene mapper ======
 static void scene_for_beam(uint8_t idx) {
   switch (idx) {
-    case 0: scene_frankenphone(); break;               // Frankenphones Lab
-    case 1: scene_intro(); techlight_scene_intro_kill(); break; // Intro/Cue forces lights OFF
-    case 2: scene_blood(); break;                      // Blood Room
-    case 3: scene_graveyard(); break;                  // Graveyard
-    case 4: scene_mirror(); break;                     // Mirror Room
-    case 5: scene_exit(); break;                       // Exit
+    case 0:
+      scene_frankenphone();
+      break;
+
+    case 1:
+      // Fire SHOW cue to Pi to start main show, then kill tech lights
+      triggers_pulse_by_name("SHOW");
+      scene_intro();
+      techlight_scene_intro_kill();
+      break;
+
+    case 2: scene_blood();     break;
+    case 3: scene_graveyard(); break;
+    case 4: scene_mirror();    break;
+    case 5: scene_exit();      break;
     default: break;
   }
 }
@@ -107,12 +117,15 @@ void inputs_init() {
   pinMode(PIN_TECHLIGHT, OUTPUT);
   techlight_write_hw(false); // start OFF
 
+  // Triggers to Pi (SHOW, BLOOD, GRAVE, FUR, FRANKEN)
+  triggers_begin();
+
   console_log("Inputs: beams B0..B5 debounced + rearm, B6 reed drives tech light");
-  console_log("Map: B0=Franken, B1=Intro, B2=Blood, B3=Graveyard, B4=Mirror, B5=Exit, B6=TechLight");
+  console_log("Map: B0=Franken, B1=Intro+SHOW, B2=Blood, B3=Graveyard, B4=Mirror, B5=Exit, B6=TechLight");
 }
 
 void inputs_update() {
-  unsigned long now = millis();
+  const unsigned long now = millis();
 
   // Beams 0..5: edge detect break with rearm
   for (uint8_t i = 0; i < N_SCENE_BEAMS; ++i) {
@@ -124,8 +137,7 @@ void inputs_update() {
     if (now - t_change[i] >= DEBOUNCE_MS) {
       if (stable_state[i] != r) {
         stable_state[i] = r;
-        // transition to 1 means newly broken
-        if (r == 1) {
+        if (r == 1) { // newly broken
           if (now - t_last_fire[i] >= REARM_MS) {
             t_last_fire[i] = now;
             console_log(String("TRIP ") + BEAM_NAMES[i]);
@@ -137,7 +149,7 @@ void inputs_update() {
   }
 
   // Beam 6: reed switch debounced
-  uint8_t reed_raw = digitalRead(PIN_BEAM_6); // 0 = closed, 1 = open (due to pullup)
+  uint8_t reed_raw = digitalRead(PIN_BEAM_6); // 0 = closed, 1 = open (pullup)
   if (reed_raw != reed_last_raw) {
     reed_last_raw = reed_raw;
     reed_t_change = now;
@@ -145,25 +157,33 @@ void inputs_update() {
   if (now - reed_t_change >= DEBOUNCE_MS) {
     if (reed_stable != reed_raw) {
       reed_stable = reed_raw;
-      // no immediate write; final drive below respects override and intro kill
+    }
+  }
+
+  // If intro latch is set, clear it when conditions allow
+  if (gLightIntroLatch) {
+    if (gLightOverride == 1) {
+      gLightIntroLatch = false;        // explicit ON clears latch
+    } else if (gLightOverride == -1 && reed_stable == LOW) {
+      gLightIntroLatch = false;        // reed closed in AUTO clears latch
     }
   }
 
   // Final tech light drive with priority rules
   bool want_on = false;
-  if (now < gLightBlockUntil) {
-    want_on = false;                       // Intro/Cue kill window
+  if (gLightIntroLatch) {
+    want_on = false;
   } else if (gLightOverride == 1) {
-    want_on = true;                        // console override ON
+    want_on = true;
   } else if (gLightOverride == 0) {
-    want_on = false;                       // console override OFF
+    want_on = false;
   } else {
-    want_on = (reed_stable == LOW);        // AUTO: reed closed = ON
+    want_on = (reed_stable == LOW);    // AUTO: reed closed = ON
   }
 
   if (want_on != gLightIsOn) {
     techlight_write_hw(want_on);
-    if (gLightOverride == -1 && now >= gLightBlockUntil) {
+    if (gLightOverride == -1 && !gLightIntroLatch) {
       console_log(want_on ? "TechLight ON (reed)" : "TechLight OFF (reed)");
     } else if (gLightOverride != -1) {
       console_log(want_on ? "TechLight ON (override)" : "TechLight OFF (override)");
@@ -175,7 +195,7 @@ void inputs_update() {
 void inputs_print_map() {
   Serial.println(F("=== Beam -> Scene Map ==="));
   Serial.println(F("B0 D2  -> Frankenphones Lab"));
-  Serial.println(F("B1 D3  -> Intro / Cue Card (kills TechLight 5 s)"));
+  Serial.println(F("B1 D3  -> Intro / Cue Card  + Pi SHOW trigger  + TechLight kill until reed/override"));
   Serial.println(F("B2 D4  -> Blood Room"));
   Serial.println(F("B3 D5  -> Graveyard"));
   Serial.println(F("B4 D7  -> Mirror Room"));
