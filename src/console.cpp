@@ -1,14 +1,12 @@
-// src/console.cpp
 #include <Arduino.h>
 #include "console.hpp"
-#include "pins.hpp"
-#include "triggers.hpp"
-#include "scenes/scene_frankenphone.hpp"
-#include "techlight.hpp"
 #include "inputs.hpp"
-
-// scene-side mute bridge
-extern "C" void frankenphone_set_mute(bool m);
+#include "settings.hpp"
+#include "mapping.hpp"
+#include "triggers.hpp"
+#include "techlight.hpp"
+#include "pins.hpp"                 // <-- needed for PIN_* and LED_* macros
+#include "scenes/scene_frankenphone.hpp"
 
 static String inbuf;
 

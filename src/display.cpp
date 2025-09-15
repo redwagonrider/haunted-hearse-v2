@@ -1,188 +1,110 @@
+// src/display.cpp
+#include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_LEDBackpack.h>
 #include "display.hpp"
 
-// --- Private state ---
-static Adafruit_AlphaNum4 alpha;
-static uint8_t DISP_ADDR = 0x70;
-static uint8_t BRIGHT = 8;
+static Adafruit_AlphaNum4 g_alpha;
+static bool     g_inited = false;
 
-// Cooldown frames (4 chars each)
-static const char* GRANT_FRAMES[] = {"ACES", "GRTD", "DONE", "OPEN"};
-static const uint8_t N_FRAMES = 4;
+static char     g_owner[16] = "";      // current owner tag
+static uint8_t  g_prio      = 0;       // current owner priority
+static uint32_t g_hold_until= 0;       // 0 = indefinite
+static char     g_last4[5]  = "    ";
+static uint8_t  g_bright    = 8;       // 0..15
 
-// Sequence data
-static String digits16, mmYY, pinStr, zip5;
+static inline uint32_t now_ms() { return millis(); }
 
-// Scroller state
-enum DispPhase { PH_SYSOVR, PH_DIGITS, PH_MMYY, PH_PINFLASH, PH_PINNUM, PH_ZIP, PH_DONE };
-static DispPhase dphase = PH_SYSOVR;
-
-static String scrollBuf;
-static uint16_t scrollDelay = 120;
-static unsigned long tScroll = 0, tPinFlash = 0, tFlash = 0;
-static int scrollIndex = 0;
-static bool flashOn = false, pinOn = false;
-static uint8_t flashes = 0, frameIdx = 0;
-
-// --- Private helpers ---
-static inline void show4(const char* s4) {
-  for (int i = 0; i < 4; i++) alpha.writeDigitAscii(i, s4[i]);
-  alpha.writeDisplay();
-}
-static inline void clear() {
-  alpha.clear();
-  alpha.writeDisplay();
+static void maybe_expire() {
+  if (g_owner[0] && g_hold_until && now_ms() > g_hold_until) {
+    g_owner[0] = '\0';
+    g_prio     = 0;
+    g_hold_until = 0;
+  }
 }
 
-static String rndDigits(uint8_t n) {
-  String s;
-  s.reserve(n);
-  for (uint8_t i = 0; i < n; i++) s += char('0' + random(10));
-  return s;
-}
-static String nearFutureMMYY() {
-  uint8_t addMonths = random(1, 18);
-  uint8_t nowMonth = 7;
-  uint16_t nowYear = 2025;
-  uint16_t y = nowYear + (nowMonth + addMonths - 1) / 12;
-  uint8_t m = ((nowMonth - 1 + addMonths) % 12) + 1;
-  char buf[6];
-  snprintf(buf, sizeof(buf), "%02u/%02u", m, (uint8_t)(y % 100));
-  return String(buf);
-}
-
-// --- Public API ---
 void display_begin(uint8_t i2c_addr, uint8_t brightness) {
-  DISP_ADDR = i2c_addr;
-  BRIGHT = brightness;
-  Wire.begin();
-  alpha.begin(DISP_ADDR);
-  alpha.setBrightness(BRIGHT);
-  clear();
-}
-void display_show4(const char* s4) { show4(s4); }
-void display_clear() { clear(); }
-void display_idle(const char* four) { show4(four); }
-void display_set_brightness(uint8_t b) {
-  BRIGHT = (b > 15) ? 15 : b;
-  alpha.setBrightness(BRIGHT);
+  if (!g_inited) {
+    Wire.begin();
+    g_alpha.begin(i2c_addr);
+    g_inited = true;
+  }
+  g_bright = constrain(brightness, 0, 15);
+  g_alpha.setBrightness(g_bright);
+  g_alpha.clear();
+  g_alpha.writeDisplay();
+  strcpy(g_last4, "    ");
+  g_owner[0] = '\0';
+  g_prio     = 0;
+  g_hold_until = 0;
 }
 
-// Hold (trigger) sequence
-void display_hold_init() {
-  dphase = PH_SYSOVR;
-  digits16 = rndDigits(16);
-  mmYY = nearFutureMMYY();
-  pinStr = "PIN " + rndDigits(3);
-  zip5 = rndDigits(5);
-  scrollBuf = "    SYSTEM OVERRIDE    ";
-  scrollDelay = 140;
-  scrollIndex = 0;
-  tScroll = 0;
-}
-void display_hold_update() {
-  unsigned long now = millis();
-  if (now - tScroll < scrollDelay) return;
-  tScroll = now;
+bool display_is_free() { maybe_expire(); return g_owner[0] == '\0'; }
 
-  auto stepScroll = [&](String& buf) -> bool {
-    if (scrollIndex + 4 <= (int)buf.length()) {
-      show4(buf.substring(scrollIndex, scrollIndex + 4).c_str());
-      scrollIndex++;
-      return false;
-    }
+bool display_is_owner(const char* owner) {
+  maybe_expire();
+  return owner && g_owner[0] && strcmp(owner, g_owner) == 0;
+}
+
+bool display_acquire(const char* owner, uint8_t priority, uint32_t hold_ms) {
+  if (!owner || !owner[0]) return false;
+  maybe_expire();
+  if (!g_owner[0] || strcmp(owner, g_owner) == 0 || priority > g_prio) {
+    strncpy(g_owner, owner, sizeof(g_owner)-1);
+    g_owner[sizeof(g_owner)-1] = '\0';
+    g_prio = priority;
+    g_hold_until = hold_ms ? (now_ms() + hold_ms) : 0;
     return true;
-  };
-
-  static String buf;
-  switch (dphase) {
-    case PH_SYSOVR:
-      buf = "    SYSTEM OVERRIDE    ";
-      if (stepScroll(buf)) {
-        dphase = PH_DIGITS;
-        scrollDelay = 180;
-        scrollIndex = 0;
-      }
-      break;
-    case PH_DIGITS:
-      buf = "    " + digits16 + "    ";
-      if (stepScroll(buf)) {
-        dphase = PH_MMYY;
-        scrollDelay = 120;
-        scrollIndex = 0;
-      }
-      break;
-    case PH_MMYY:
-      buf = "    " + mmYY + "    ";
-      if (stepScroll(buf)) {
-        dphase = PH_PINFLASH;
-        flashes = 0;
-        pinOn = false;
-        tPinFlash = now;
-      }
-      break;
-    case PH_PINFLASH: {
-      const uint16_t onMs = 180, offMs = 140;
-      uint16_t dur = pinOn ? onMs : offMs;
-      if (now - tPinFlash >= dur) {
-        tPinFlash = now;
-        pinOn = !pinOn;
-        if (pinOn)
-          show4("PIN ");
-        else {
-          clear();
-          flashes++;
-        }
-        if (flashes >= 3 && !pinOn) {
-          dphase = PH_PINNUM;
-          scrollDelay = 120;
-          scrollIndex = 0;
-        }
-      }
-    } break;
-    case PH_PINNUM:
-      buf = "    PIN " + digits16.substring(0, 3) + "    ";
-      if (stepScroll(buf)) {
-        dphase = PH_ZIP;
-        scrollDelay = 120;
-        scrollIndex = 0;
-      }
-      break;
-    case PH_ZIP:
-      buf = "    " + zip5 + "    ";
-      if (stepScroll(buf)) {
-        dphase = PH_DONE;
-      }
-      break;
-    case PH_DONE:
-      break;
   }
+  return false;
 }
 
-// Cooldown sequence
-void display_cooldown_init() {
-  flashOn = false;
-  frameIdx = 0;
-  tFlash = 0;
-  clear();
+bool display_renew(const char* owner, uint32_t hold_ms) {
+  if (!display_is_owner(owner)) return false;
+  g_hold_until = hold_ms ? (now_ms() + hold_ms) : 0;
+  return true;
 }
-void display_cooldown_update() {
-  unsigned long now = millis();
-  const uint16_t FLASH_ON_MS = 220, FLASH_OFF_MS = 180;
-  uint16_t dur = flashOn ? FLASH_ON_MS : FLASH_OFF_MS;
-  if (now - tFlash >= dur) {
-    tFlash = now;
-    flashOn = !flashOn;
-    if (flashOn) {
-      show4(GRANT_FRAMES[frameIdx]);
-      frameIdx = (frameIdx + 1) % N_FRAMES;
-    } else {
-      clear();
-    }
-  }
+
+void display_release(const char* owner) {
+  if (!display_is_owner(owner)) return;
+  g_owner[0] = '\0';
+  g_prio = 0;
+  g_hold_until = 0;
 }
-void display_update() {
-  // No-op for now. Used for real-time display animations if needed.
+
+static void hw_show4(const char* s4) {
+  char buf[5] = {' ',' ',' ',' ','\0'};
+  for (uint8_t i=0;i<4;i++) buf[i] = s4 && s4[i] ? s4[i] : ' ';
+  if (strncmp(buf, g_last4, 4) == 0) return; // avoid redundant I2C writes
+  g_alpha.clear();
+  g_alpha.writeDigitAscii(0, buf[0]);
+  g_alpha.writeDigitAscii(1, buf[1]);
+  g_alpha.writeDigitAscii(2, buf[2]);
+  g_alpha.writeDigitAscii(3, buf[3]);
+  g_alpha.writeDisplay();
+  memcpy(g_last4, buf, 4);
+  g_last4[4] = '\0';
+}
+
+void display_print4_unchecked(const char* s4) { hw_show4(s4); }
+
+void display_print4_owned(const char* owner, const char* s4) {
+  if (!display_is_owner(owner)) return;
+  hw_show4(s4);
+}
+
+bool display_set_brightness_owned(const char* owner, uint8_t level) {
+  if (!display_is_owner(owner)) return false;
+  uint8_t l = constrain(level, 0, 15);
+  if (l == g_bright) return true;
+  g_bright = l;
+  g_alpha.setBrightness(g_bright);
+  return true;
+}
+
+void display_idle(const char* s4) {
+  maybe_expire();
+  if (g_owner[0]) return; // someone else owns it
+  hw_show4(s4);
 }

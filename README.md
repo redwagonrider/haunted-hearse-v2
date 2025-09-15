@@ -142,3 +142,49 @@ SAVE               # persist changes to EEPROM
 SCENE FRANKENLAB   # force Frankenphones Lab scene
 MAP                # confirm beam mapping
 
+## Addendum - Display Arbiter, Beams, Tech Light, and Scene Text (2025-09-15)
+
+### What changed
+- Added a display arbiter so scenes can own the 4-digit AlphaNum4. Idle "OBEY" only draws when the display is free.
+- Frankenphones Lab uses the arbiter during HOLD and briefly into COOLDOWN.
+- Blood Room gained a non-blocking DRIP animation that drips in, flashes, fades, then drips out.
+- Introduced a TechLight output with operator overrides and an intro kill rule.
+
+---
+
+### Hardware pins in use
+- Break beams B0..B5 on D2, D3, D4, D5, D7, D9
+- Reed switch for tech booth B6 on D30
+- TechLight output D26  active high unless configured otherwise
+- Magnet MOSFET gate D6
+- Buzzer D8
+- Status LEDs  Green D10, Red D11, Yellow D12
+- I2C display SDA D20, SCL D21 at 0x70
+
+---
+
+### Beam map and effects
+| Beam | Pin | Scene or Action |
+|------|-----|------------------|
+| B0   | D2  | Frankenphones Lab. Full sequence with modem sound, magnet, LEDs, and display takeover. |
+| B1   | D3  | Intro and Cue Card then blackout. Pulses Pi SHOW trigger and forces TechLight OFF for at least 5 s. |
+| B2   | D4  | Blood Room. Pulses Pi BLOOD trigger and runs DRIP text animation on the 4-digit. |
+| B3   | D5  | Graveyard. Placeholder, ready for scene text via arbiter. |
+| B4   | D7  | Mirror Room. Placeholder, ready for scene text via arbiter. |
+| B5   | D9  | Exit. Placeholder, ready for scene text via arbiter. |
+| B6   | D30 | TechLight reed input. Closed equals ON when in AUTO mode. |
+
+All beams B0..B5 are active LOW with INPUT_PULLUP, 30 ms debounce, 20 s auto re-arm.
+
+---
+
+### TechLight operator rules
+- Modes  AUTO, FORCE ON, FORCE OFF
+- Priority  operator overrides trump everything
+- Intro and Cue sets TechLight OFF immediately, enforces at least 5 s blackout, and keeps OFF until either
+  - you set FORCE ON, or
+  - you are in AUTO and the reed closes
+
+Console shortcuts examples
+```text
+TL ON

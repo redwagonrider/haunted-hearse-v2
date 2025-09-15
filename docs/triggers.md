@@ -73,10 +73,17 @@ B6 is a reed switch to GND with `INPUT_PULLUP`. Closed equals LOW.
 
 ### Beam 2 — Blood Room
 - **Pin**: D4
-- **Type**: active LOW with INPUT_PULLUP, debounce 30 ms, re-arm 20 s
-- **Scene / Action**: `scene_blood()`
-- **Notes**: —
-- **Console test**: trip sensor
+- **Type**: active LOW with `INPUT_PULLUP`, debounce 30 ms, re-arm 20 s
+- **Scene / Action**:
+  1) Pulses Pi trigger **BLOOD** to start the room overlay
+  2) Local strip on D31 runs a non-blocking dripping blood effect for 12 s
+  3) 4-digit shows `DRIP` while active
+- **Console test**:
+  - `TRIG BLOOD` pulses the Pi line
+  - Trip the sensor to see the local strip effect
+- **Wiring**:
+  - Data pin D31 → WS281x strip DIN, 5 V and GND common with Mega
+  - Change `BLOOD_LED_PIN` or `BLOOD_LED_COUNT` in `scene_blood.cpp` to match your hardware
 
 ### Beam 3 — Graveyard
 - **Pin**: D5

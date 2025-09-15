@@ -5,15 +5,19 @@
 #include "techlight.hpp"
 #include "inputs.hpp"
 #include "triggers.hpp"
+#include "display.hpp"   // for any idle writers you already use
 
 // Scene entry points
 #include "scenes/scene_frankenphone.hpp"
 void scene_intro();
 void scene_blackout();
-void scene_blood();
 void scene_graveyard();
 void scene_mirror();
 void scene_exit();
+
+// Blood scene API: entry + per-loop tick
+void scene_blood();
+void scene_blood_tick();
 
 static const uint8_t N_SCENE_BEAMS = 6; // beams 0..5 launch scenes
 
@@ -42,8 +46,9 @@ static unsigned long reed_t_change = 0;
 // -1 = AUTO (follow reed), 0 = FORCE_OFF, 1 = FORCE_ON
 static int8_t  gLightOverride     = -1;
 static bool    gLightIsOn         = false;
-// Intro latch: keep lights OFF until reed closes in AUTO or a console override happens
+// Intro behavior: minimum blackout window, then latch OFF until reed closes or override ON
 static bool    gLightIntroLatch   = false;
+static unsigned long gLightBlockUntil = 0;
 
 static inline uint8_t raw_active_low(uint8_t pin) { return digitalRead(pin) == LOW ? 1 : 0; }
 
@@ -58,13 +63,18 @@ static inline void techlight_write_hw(bool on) {
 
 // ====== Techlight API (implementation) ======
 void techlight_override_on()  { gLightOverride = 1;  gLightIntroLatch = false; techlight_write_hw(true);  console_log("TechLight OVERRIDE ON"); }
-void techlight_override_off() { gLightOverride = 0;  /* keep intro latch conceptually irrelevant */ techlight_write_hw(false); console_log("TechLight OVERRIDE OFF"); }
-void techlight_override_auto(){ gLightOverride = -1; /* intro latch may still apply until reed closes */ console_log("TechLight AUTO (follow reed)"); }
-void techlight_scene_intro_kill(uint16_t /*ms_holdoff*/) {
+void techlight_override_off() { gLightOverride = 0;  techlight_write_hw(false); console_log("TechLight OVERRIDE OFF"); }
+void techlight_override_auto(){ gLightOverride = -1; console_log("TechLight AUTO (follow reed)"); }
+
+// Header declares default 5000 ms. Definition here enforces OFF now,
+// minimum blackout window, then latch until reed closes in AUTO or override ON.
+void techlight_scene_intro_kill(uint16_t ms_holdoff) {
   techlight_write_hw(false);
-  gLightIntroLatch = true; // stays OFF until reed closes in AUTO, or an override ON
-  console_log("TechLight OFF by Intro/Cue until reed closes or override");
+  gLightIntroLatch   = true;
+  gLightBlockUntil   = millis() + ms_holdoff;
+  console_log("TechLight OFF by Intro/Cue");
 }
+
 bool techlight_is_on() { return gLightIsOn; }
 const char* techlight_mode_name() {
   switch (gLightOverride) {
@@ -85,10 +95,14 @@ static void scene_for_beam(uint8_t idx) {
       // Fire SHOW cue to Pi to start main show, then kill tech lights
       triggers_pulse_by_name("SHOW");
       scene_intro();
-      techlight_scene_intro_kill();
+      techlight_scene_intro_kill(); // default 5000 ms min blackout
       break;
 
-    case 2: scene_blood();     break;
+    case 2:
+      // Start Blood animation. scene_blood_tick() will be called every loop.
+      scene_blood();
+      break;
+
     case 3: scene_graveyard(); break;
     case 4: scene_mirror();    break;
     case 5: scene_exit();      break;
@@ -160,12 +174,12 @@ void inputs_update() {
     }
   }
 
-  // If intro latch is set, clear it when conditions allow
-  if (gLightIntroLatch) {
+  // If intro latch is set, it cannot clear before the minimum blackout ends.
+  if (gLightIntroLatch && now >= gLightBlockUntil) {
     if (gLightOverride == 1) {
-      gLightIntroLatch = false;        // explicit ON clears latch
+      gLightIntroLatch = false;
     } else if (gLightOverride == -1 && reed_stable == LOW) {
-      gLightIntroLatch = false;        // reed closed in AUTO clears latch
+      gLightIntroLatch = false;
     }
   }
 
@@ -189,14 +203,17 @@ void inputs_update() {
       console_log(want_on ? "TechLight ON (override)" : "TechLight OFF (override)");
     }
   }
+
+  // Tick Blood animation each loop so it progresses after the one-shot trip
+  scene_blood_tick();
 }
 
 // ====== Mapping printer for console ======
 void inputs_print_map() {
   Serial.println(F("=== Beam -> Scene Map ==="));
   Serial.println(F("B0 D2  -> Frankenphones Lab"));
-  Serial.println(F("B1 D3  -> Intro / Cue Card  + Pi SHOW trigger  + TechLight kill until reed/override"));
-  Serial.println(F("B2 D4  -> Blood Room"));
+  Serial.println(F("B1 D3  -> Intro / Cue Card  + Pi SHOW trigger  + TechLight kill"));
+  Serial.println(F("B2 D4  -> Blood Room (DRIP in/flash/fade/out animation)"));
   Serial.println(F("B3 D5  -> Graveyard"));
   Serial.println(F("B4 D7  -> Mirror Room"));
   Serial.println(F("B5 D9  -> Exit"));
