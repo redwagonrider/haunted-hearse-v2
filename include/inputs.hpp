@@ -1,22 +1,25 @@
 #pragma once
 #include <Arduino.h>
+#include "scenes.hpp"
 
-// Initialize up to 6 break-beam inputs (use 0xFF for unused slots)
-void inputs_begin(const uint8_t pins[6], uint16_t debounceMs = 30, uint32_t rearmMs = 2000);
+// Initialize inputs with up to 6 beam receiver pins.
+// pins[0..5] = Arduino digital pin numbers. Unused beams set to 255.
+void inputs_begin(const uint8_t pins[6], uint16_t debounce_ms, uint32_t rearm_ms);
 
-// Call every loop to update internal state
+// Periodic update (non-blocking). Call every loop() tick.
 void inputs_update();
 
-// Returns true once per break event (LOW edge) then auto-clears
-bool inputs_triggered(uint8_t idx);    // idx = 0..5
+// True exactly once when the given beam index fired since last update/read.
+bool inputs_triggered(uint8_t idx);
 
-// Live state helpers (no latching)
-bool inputs_isBroken(uint8_t idx);     // true while beam is broken (LOW)
-bool inputs_isStable(uint8_t idx);     // debounced “stable” reading
-
-// Tuning at runtime (optional)
+// Runtime tuning
 void inputs_setDebounce(uint16_t ms);
 void inputs_setRearm(uint32_t ms);
 
-// For console / debugging
+// Optional per-beam inversion (false=LOW means broken [default], true=HIGH means broken)
+void inputs_setInvert(uint8_t idx, bool inverted);
+
+// Debug dump
 void inputs_printStatus(Stream& s);
+
+void inputs_init();

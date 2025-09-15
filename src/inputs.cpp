@@ -1,89 +1,174 @@
-#include "inputs.hpp"
+// src/inputs.cpp
+#include <Arduino.h>
+#include "pins.hpp"
+#include "console.hpp"
+#include "techlight.hpp"   // NEW
 
-static uint8_t g_pins[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
-static uint8_t g_count   = 0;
+// Scene entry points
+#include "scenes/scene_frankenphone.hpp"
+void scene_intro();
+void scene_blackout();
+void scene_blood();
+void scene_graveyard();
+void scene_mirror();
+void scene_exit();
 
-static uint16_t g_debounceMs = 30;
-static uint32_t g_rearmMs    = 2000;
+static const uint8_t N_SCENE_BEAMS = 6; // beams 0..5 launch scenes
 
-struct SensorState {
-  bool     stable;        // debounced logical state (true = broken/LOW)
-  bool     lastStable;
-  bool     event;         // latched “just broke” event
-  uint8_t  pin;
-  uint32_t tLastChange;
-  uint32_t tLastTrigger;  // last time we accepted a break event
+// Map: which Arduino pins are beams 0..6
+static const uint8_t BEAM_PINS[7] = {
+  PIN_BEAM_0, PIN_BEAM_1, PIN_BEAM_2, PIN_BEAM_3, PIN_BEAM_4, PIN_BEAM_5, PIN_BEAM_6
 };
-static SensorState S[6];
+static const char*   BEAM_NAMES[7] = { "B0","B1","B2","B3","B4","B5","B6" };
 
-void inputs_begin(const uint8_t pins[6], uint16_t debounceMs, uint32_t rearmMs){
-  g_debounceMs = debounceMs;
-  g_rearmMs    = rearmMs;
-  g_count = 0;
-  for (uint8_t i=0; i<6; i++){
-    g_pins[i] = pins[i];
-    if (g_pins[i] != 0xFF){
-      pinMode(g_pins[i], INPUT_PULLUP);   // receivers pull LOW when broken
-      S[g_count] = { false, false, false, (uint8_t)g_pins[i], (uint32_t)millis(), (uint32_t)0UL };
-      g_count++;
-    }
+// Debounce and rearm timing
+static const unsigned long DEBOUNCE_MS = 30;
+static const unsigned long REARM_MS    = 20000; // 20 s
+
+// Per-beam state machine (for beams 0..5)
+static uint8_t stable_state[6];     // 0 clear, 1 broken
+static uint8_t last_raw[6];
+static unsigned long t_change[6];
+static unsigned long t_last_fire[6];
+
+// Beam 6 (reed) raw tracking
+static uint8_t  reed_last_raw = 1;  // 1 = open due to pullup
+static uint8_t  reed_stable   = 1;
+static unsigned long reed_t_change = 0;
+
+// Tech light control state
+// -1 = AUTO (follow reed), 0 = FORCE_OFF, 1 = FORCE_ON
+static int8_t gLightOverride = -1;
+static bool   gLightIsOn     = false;
+static unsigned long gLightBlockUntil = 0; // while now < this, force OFF regardless
+
+// Helpers
+static inline uint8_t raw_active_low(uint8_t pin) { return digitalRead(pin) == LOW ? 1 : 0; }
+
+static inline void techlight_write_hw(bool on) {
+#if TECHLIGHT_ACTIVE_HIGH
+  digitalWrite(PIN_TECHLIGHT, on ? HIGH : LOW);
+#else
+  digitalWrite(PIN_TECHLIGHT, on ? LOW : HIGH);
+#endif
+  gLightIsOn = on;
+}
+
+// ====== Techlight API (implementation) ======
+void techlight_override_on()  { gLightOverride = 1;  techlight_write_hw(true);  console_log("TechLight OVERRIDE ON"); }
+void techlight_override_off() { gLightOverride = 0;  techlight_write_hw(false); console_log("TechLight OVERRIDE OFF"); }
+void techlight_override_auto(){ gLightOverride = -1; console_log("TechLight AUTO (follow reed)"); }
+void techlight_scene_intro_kill(uint16_t ms_holdoff) {
+  techlight_write_hw(false);
+  gLightBlockUntil = millis() + ms_holdoff;
+  console_log("TechLight OFF by Intro/Cue");
+}
+bool techlight_is_on() { return gLightIsOn; }
+const char* techlight_mode_name() {
+  switch (gLightOverride) {
+    case 1:  return "FORCE_ON";
+    case 0:  return "FORCE_OFF";
+    default: return "AUTO";
   }
 }
 
-void inputs_setDebounce(uint16_t ms){ g_debounceMs = ms; }
-void inputs_setRearm(uint32_t ms){ g_rearmMs = ms; }
+// ====== Scene mapper ======
+static void scene_for_beam(uint8_t idx) {
+  switch (idx) {
+    case 0: scene_frankenphone(); break;               // Frankenphones Lab
+    case 1: scene_intro(); techlight_scene_intro_kill(); break; // Intro/Cue forces lights OFF
+    case 2: scene_blood(); break;                      // Blood Room
+    case 3: scene_graveyard(); break;                  // Graveyard
+    case 4: scene_mirror(); break;                     // Mirror Room
+    case 5: scene_exit(); break;                       // Exit
+    default: break;
+  }
+}
 
-void inputs_update(){
-  uint32_t now = (uint32_t)millis();
-  for (uint8_t i=0; i<g_count; i++){
-    SensorState &x = S[i];
-    bool broken = (digitalRead(x.pin) == LOW);  // LOW = beam broken
+void inputs_init() {
+  // Beams 0..5
+  for (uint8_t i = 0; i < N_SCENE_BEAMS; ++i) {
+    pinMode(BEAM_PINS[i], INPUT_PULLUP);
+    uint8_t r = raw_active_low(BEAM_PINS[i]);
+    last_raw[i]   = r;
+    stable_state[i]= r;
+    t_change[i]   = millis();
+    t_last_fire[i]= 0;
+  }
 
-    // Edge detect into debounce window
-    if (broken != x.lastStable){
-      x.tLastChange = now;
-      x.lastStable  = broken;
+  // Beam 6: Reed switch (Adafruit 375). INPUT_PULLUP, active when CLOSED.
+  pinMode(PIN_BEAM_6, INPUT_PULLUP);
+  reed_last_raw = digitalRead(PIN_BEAM_6); // 0 when closed, 1 when open
+  reed_stable   = reed_last_raw;
+  reed_t_change = millis();
+
+  // Tech booth light output
+  pinMode(PIN_TECHLIGHT, OUTPUT);
+  techlight_write_hw(false); // start OFF
+
+  console_log("Inputs: beams B0..B5 debounced + rearm, B6 reed drives tech light");
+  console_log("Map: B0=Franken, B1=Intro, B2=Blood, B3=Graveyard, B4=Mirror, B5=Exit, B6=TechLight");
+}
+
+void inputs_update() {
+  unsigned long now = millis();
+
+  // Beams 0..5: edge detect break with rearm
+  for (uint8_t i = 0; i < N_SCENE_BEAMS; ++i) {
+    uint8_t r = raw_active_low(BEAM_PINS[i]);
+    if (r != last_raw[i]) {
+      last_raw[i] = r;
+      t_change[i] = now;
     }
-
-    // Commit state after debounce time
-    if ((now - x.tLastChange) >= g_debounceMs){
-      if (x.stable != x.lastStable){
-        x.stable = x.lastStable;
-        // Rising into "broken" -> one-shot event, subject to rearm
-        if (x.stable && (now - x.tLastTrigger >= g_rearmMs)){
-          x.event = true;
-          x.tLastTrigger = now;
+    if (now - t_change[i] >= DEBOUNCE_MS) {
+      if (stable_state[i] != r) {
+        stable_state[i] = r;
+        // transition to 1 means newly broken
+        if (r == 1) {
+          if (now - t_last_fire[i] >= REARM_MS) {
+            t_last_fire[i] = now;
+            console_log(String("TRIP ") + BEAM_NAMES[i]);
+            scene_for_beam(i);
+          }
         }
       }
     }
   }
-}
 
-bool inputs_triggered(uint8_t idx){
-  if (idx >= g_count) return false;
-  if (S[idx].event){ S[idx].event = false; return true; }
-  return false;
-}
-
-bool inputs_isBroken(uint8_t idx){
-  if (idx >= g_count) return false;
-  return S[idx].stable;
-}
-
-bool inputs_isStable(uint8_t idx){
-  if (idx >= g_count) return false;
-  return S[idx].stable;   // debounced state
-}
-
-void inputs_printStatus(Stream& s){
-  s.println(F("== Sensors =="));
-  for (uint8_t i=0; i<g_count; i++){
-    s.print(F("#")); s.print(i);
-    s.print(F(" pin=")); s.print(S[i].pin);
-    s.print(F(" state=")); s.print(S[i].stable ? F("BROKEN") : F("OK"));
-    s.print(F(" (event=")); s.print(S[i].event ? F("yes") : F("no"));
-    s.println(F(")"));
+  // Beam 6: reed switch debounced
+  uint8_t reed_raw = digitalRead(PIN_BEAM_6); // 0 = closed, 1 = open (due to pullup)
+  if (reed_raw != reed_last_raw) {
+    reed_last_raw = reed_raw;
+    reed_t_change = now;
   }
-  s.print(F("debounce=")); s.print(g_debounceMs);
-  s.print(F("ms, rearm=")); s.print(g_rearmMs); s.println(F("ms"));
+  if (now - reed_t_change >= DEBOUNCE_MS) {
+    if (reed_stable != reed_raw) {
+      reed_stable = reed_raw;
+      // No immediate write here; final drive happens below respecting override and block
+    }
+  }
+
+  // Final tech light drive with priority
+  // 1) If Intro/Cue kill window is active, force OFF
+  // 2) Else console override ON/OFF if set
+  // 3) Else follow reed: closed = ON, open = OFF
+  bool want_on = false;
+  if (now < gLightBlockUntil) {
+    want_on = false;
+  } else if (gLightOverride == 1) {
+    want_on = true;
+  } else if (gLightOverride == 0) {
+    want_on = false;
+  } else {
+    want_on = (reed_stable == LOW); // closed contact turns light ON
+  }
+
+  if (want_on != gLightIsOn) {
+    techlight_write_hw(want_on);
+    if (gLightOverride == -1) {
+      console_log(want_on ? "TechLight ON (reed)" : "TechLight OFF (reed)");
+    } else {
+      console_log(want_on ? "TechLight ON (override)" : "TechLight OFF (override)");
+    }
+  }
 }
