@@ -1,25 +1,58 @@
+// effects.hpp
 #pragma once
 #include <Arduino.h>
 
-// Initialize effects module with pin map and current HOLD duration
-void effects_begin(uint8_t pinLedArmed,
-                   uint8_t pinLedHold,
-                   uint8_t pinLedCooldown,
-                   uint8_t pinBuzzer,
-                   uint8_t pinMagnet,
-                   unsigned long holdMs);
+// Init
+void effects_begin();
 
-// If you adjust the hold length later
-void effects_setHoldMs(unsigned long holdMs);
+// Core scene helpers used across the project
+void effects_holdPulseRed(unsigned long elapsed);
+void effects_updateCooldown();
+void effects_updateArmed();
 
-// Magnet helpers
-void effects_magnet_on();
-void effects_magnet_off();
+// RGB tracking for telemetry
+void effects_setRGB(uint8_t r, uint8_t g, uint8_t b);
+void effects_getRGB(uint8_t& r, uint8_t& g, uint8_t& b);
 
-// Sound helpers
-void effects_sound_stop();            // stop any buzzer tone
+// Common effects referenced by scenes
+void effects_showBlackout();     // all off
+void effects_exitStrobe();       // white strobe
+void effects_showStandby();      // wrapper used by scene_standby
 
-// Per-state visual/audio updates (call each loop)
-void effects_idle_update();           // green breathe
-void effects_hold_update(unsigned long elapsedMs);   // red stutter + modem sound
-void effects_cooldown_update();       // yellow flicker
+// Fire room
+void effects_fireFlicker();      // red/orange flicker
+
+// Fur room
+void effects_furPulse();         // warm pink/magenta pulse
+
+// Graveyard
+void effects_mistyGraveyard();   // cyan/green slow fade
+
+// Blood room
+void effects_bloodPulse();       // deep red pulse
+void effects_bloodDrip();        // random red spikes
+
+// Spider lair
+void effects_spiderCrawl();      // quick white blips
+void effects_spiderEyes();       // dim red hold
+void effects_spiderWebFlash();   // sharp web camera flash
+
+// Mirror room
+void effects_mirrorStrobe();     // bright white strobe
+void effects_mirrorSweep();      // slower sweep
+void effects_mirrorFlash();      // single-call flash helper
+
+// Orca scene
+void effects_orcaBlueFade();     // deep blue breathe
+void effects_orcaWave();         // blue to teal wave
+void effects_orcaSplash();       // short bright splash
+
+// Intro
+void effects_introFade();        // soft white fade in
+
+// Secret
+void effects_secretGlow();       // purple breathe
+void effects_secretReveal();     // bright reveal pulse
+
+// Standby
+void effects_standbyIdle();      // dim amber idle

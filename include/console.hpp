@@ -1,4 +1,6 @@
-#pragma once
+#ifndef CONSOLE_HPP
+#define CONSOLE_HPP
+
 #include <Arduino.h>
 
 // ============================================================
@@ -51,3 +53,8 @@ void console_update();
 
 // Logging flag getter for main.cpp
 bool console_should_log();
+
+// Print a tagged log message if logging is enabled
+void console_log(const String& msg);
+
+#endif
