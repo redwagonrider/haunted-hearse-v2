@@ -1,121 +1,121 @@
 # Haunted Hearse v2
 
-An experimental **miniature haunted ride** built into a 1992 Cadillac Brougham (Superior Coach conversion). 
-The ride is powered by **addressable LEDs, sensors, and props**, all orchestrated by an **Arduino Mega 2560** + **Falcon F16v5** + **Raspberry Pi (FPP)** stack.
+An experimental miniature haunted ride built into a 1992 Cadillac Brougham (Superior Coach conversion).  
+The ride uses addressable LEDs, sensors, and props, orchestrated by an Arduino Mega 2560 + Falcon F16v5 + Raspberry Pi (FPP).
 
 ---
 
-## 🛠 Project Overview
+## Project overview
 
-- **Ride Control**: Arduino Mega 2560 + custom breadboard modules 
-- **Lighting**: Falcon F16v5, WS2812B / WS2815 pixels, UV LEDs 
-- **Sequencing**: xLights + FPP (running on Raspberry Pi) 
-- **Props**: Electromagnets, passive buzzers, IR break-beams, sensors 
-- **Persistence**: Settings & mappings stored in EEPROM 
+- Ride control: Arduino Mega 2560 with custom modules  
+- Lighting: Falcon F16v5, WS2812B and WS2815 pixels, UV LEDs  
+- Sequencing: xLights + FPP on Raspberry Pi  
+- Props: electromagnets, passive buzzers, IR break beams, reed switch  
+- Persistence: settings and mappings stored in EEPROM
 
-The ride consists of **13 themed scenarios**, each triggered by break-beam sensors along the track. 
-Scenes include the **Blood Room, Graveyard, Fur Room, Orca/Dino, Frankenphones Lab, Mirror Room**, and more.
+The ride has multiple themed scenes triggered by sensors along the track. Examples: Blood Room, Graveyard, Fur Room, Orca or Dino, Frankenphones Lab, Mirror Room, Exit.
 
 ---
 
-## 📂 Repository Layout
-
+## Repository layout
 haunted-hearse-v2/
-
-├── include/       # Header files (console.hpp, settings.hpp, etc.)
-
-├── src/           # Source code (main.cpp, console.cpp, inputs.cpp, etc.)
-
-├── docs/          # Documentation & references
-
-├── .pio/          # PlatformIO build system
-
-├── platformio.ini # Project configuration
-
-└── README.md      # This file
-
+├── include/            # headers (console.hpp, settings.hpp, pins.hpp, display.hpp, …)
+├── src/                # sources (main.cpp, console.cpp, inputs.cpp, scenes/*, …)
+├── docs/               # reference docs
+├── platformio.ini      # PlatformIO config
+└── README.md
 
 ---
 
-## ⚡ Hardware Setup
+## Hardware setup
 
 ### Power
-- **12 V Car Battery** → feeds LED rails + converters  
-- **DROK DC-DC Converters** → 12 V regulated rail and 5 V rail for logic/props  
-- **Common Ground** required across Mega, Pi, Falcon, and power rails  
+- 12 V car battery feeds LED rails and DC-DC converters  
+- Converters provide a regulated 12 V rail and a 5 V rail for logic and props  
+- Common ground required across Mega, Pi, Falcon, and both rails
 
-### Arduino Mega 2560 Connections
-- **Break-beam sensors (6x)**: Pins 2, 3, 4, 5, 7, 9 (INPUT_PULLUP)  
-- **Magnet MOSFET driver**: Pin 6 (output → gate → electromagnet)  
-- **Passive buzzer**: Pin 8  
-- **Indicator LEDs**: Pins 10 (green), 11 (red), 12 (yellow)  
-- **I²C display**: SDA = 20, SCL = 21  
+### Arduino Mega 2560 pins
+- Break beams  
+  - Beam 0: D2  Frankenphones Lab  
+  - Beam 1: D3  Intro and cue card then blackout  
+  - Beam 2: D4  Blood Room  
+  - Beam 3: D5  Graveyard  
+  - Beam 4: D7  Mirror Room  
+  - Beam 5: D9  Exit  
+  - Beam 6: D30 Tech booth reed switch (Adafruit 375 type)
+- Outputs and devices  
+  - Magnet MOSFET gate: D6  
+  - Passive buzzer: D8  
+  - Indicator LEDs: D10 green, D11 red, D12 yellow  
+  - TechLight output: D26 active high  
+  - I2C 4 digit display: SDA pin 20, SCL pin 21, addr 0x70
 
 ### Sensors
-- IR Break-beams wired **VCC=5V**, **GND=common**, **Signal → Mega pin**  
-- Each sensor auto-debounced in code and re-arms after 20s (configurable)
+- IR break beams: VCC 5 V, GND, signal to Mega pin with INPUT_PULLUP  
+- Each sensor is debounced in code and auto re-arms after a cooldown
 
 ### Lighting
-- **Falcon F16v5** handles pixel outputs (WS2811/2815 @ 12 V, WS2812B @ 5 V)  
-- Falcon and Mega communicate via Pi/FPP for sync sequencing  
-- Pi also manages triggers and sequences if extended  
-
-### Notes
-- All grounds (12 V, 5 V, Mega, Pi, Falcon) must be tied together  
-- Use **fused distribution blocks** for safety (both 12 V and 5 V rails)  
-- EEPROM ensures tunables (hold time, cooldown, brightness, mappings) survive power cycles
+- Falcon F16v5 drives pixels  
+- Pi runs FPP for sequences and events
 
 ---
 
-## 🎛 Console Commands
+## Display and telemetry
 
-Connect to the Mega via **Serial Monitor @ 115200 baud**.  
-Commands are case-insensitive.
-
-### Help & Status
-- `?` or `HELP` — show all commands  
-- `CFG` — print current settings + sensor states  
-- `MAP` — print beam → scene mapping  
-
-### Timing / Settings
-- `HOLD <ms>` — set FrankenLab hold duration  
-- `COOL <ms>` — set cooldown/lockout duration  
-- `BRIGHT <0..15>` — set display brightness  
-- `SDEB <ms>` — set beam debounce (0–2000 ms)  
-- `SREARM <ms>` — set beam re-arm (0–600000 ms)  
-
-### EEPROM Persistence
-- `SAVE` — save settings to EEPROM  
-- `LOAD` — load settings from EEPROM (auto-loads on boot)  
-
-### Forcing States & Scenes
-- `STATE <code>` — force by numeric code  
-  - 0 = Standby  
-  - 1 = FrankenLab  
-  - 2 = MirrorRoom  
-  - 10 = PhoneLoading  
-  - 11 = IntroCue  
-  - 12 = BloodRoom  
-  - 13 = Graveyard  
-  - 14 = FurRoom  
-  - 15 = OrcaDino  
-  - 16 = FrankenLab  
-  - 17 = MirrorRoom  
-  - 18 = ExitHole  
-
-- `SCENE <name>` — force by scene name  
-  Examples:  
-  `SCENE BLOODROOM`, `SCENE FRANKENLAB`, `SCENE EXIT`
+- A display arbiter prevents idle text from stomping scene text  
+- Idle uses `display_idle("OBEY")` and yields to any scene that acquires the display  
+- Serial Studio v3 project supported  
+  - Frame format: `/*ms,scene,phase,beam,magnet,buzzer,R,G,B*/`  
+  - Example: `/*5000,frankenphone,HOLD,0,1,0,176,32,0*/`
 
 ---
 
-## 🧪 Workflow Example
+## TechLight behavior
 
-```text
-CFG                # check current settings
-HOLD 6000          # set hold duration to 6s
-BRIGHT 10          # adjust display brightness
-SAVE               # persist changes to EEPROM
-SCENE FRANKENLAB   # force Frankenphones Lab scene
-MAP                # confirm beam mapping
+- Modes: AUTO, FORCE ON, FORCE OFF  
+- Operator command always wins  
+- Intro and cue card force TechLight OFF for at least 5 seconds before returning to the chosen mode
+
+---
+
+## Console commands
+
+Connect at 115200 baud. Commands are case insensitive.
+
+- `?` or `HELP`  show commands  
+- `CFG`  print pin map and sensor states  
+- `MAP`  print beam to scene mapping
+
+Timing and display
+- `HOLD <ms>`  set Frankenphones hold duration  
+- `COOL <ms>`  set cooldown or re arm time  
+- `BRIGHT <0..15>`  set 4 digit display brightness
+
+Debounce and rearm
+- `SDEB <ms>`  set beam debounce  
+- `SREARM <ms>`  set beam re arm
+
+EEPROM
+- `SAVE`  save settings  
+- `LOAD`  load settings
+
+Tech light
+- `TL ON`  force on  
+- `TL OFF`  force off  
+- `TL AUTO`  return to automatic with scene rules
+
+Scenes
+- `SCENE <name>`  force a scene by name, for example `SCENE FRANKENLAB` or `SCENE BLOODROOM`  
+- `STATE <code>`  developer shortcut when numeric codes are enabled
+
+---
+
+## Workflow example
+CFG                 # verify pins and sensor levels
+BRIGHT 10           # set display brightness
+HOLD 8000           # Frankenphones hold 8 seconds
+COOL 20000          # cooldown 20 seconds
+SAVE                # persist to EEPROM
+SCENE FRANKENLAB    # test the Frankenphones Lab scene
+MAP                 # check beam to scene mapping
 
