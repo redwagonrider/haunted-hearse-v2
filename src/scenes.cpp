@@ -1,119 +1,73 @@
 #include "scenes.hpp"
-#include "effects.hpp"
-#include "display.hpp"
-#include "settings.hpp"
-#include "recorder.hpp"
-#include "gopro.hpp"
 
-namespace {
-  Scene currentScene = Scene::Standby;
-  unsigned long sceneStart = 0;
+// Forward declarations to avoid needing every scene header here
+extern void scene_standby();
+extern void scene_frankenphone();  // FrankenLab
+extern void scene_mirror();
+extern void scene_phoneLoading();
+extern void scene_intro();
+extern void scene_blood();
+extern void scene_graveyard();
+extern void scene_fur();
+extern void scene_orca();
+extern void scene_exit();
+extern void scene_blackout();
+extern void scene_secret();
+extern void scene_spider();
+extern void scene_spiders();
+extern void scene_fire();
 
-  // --- Scene entry helpers ---
+SceneFn g_currentScene = nullptr;
 
-  static void enterStandby(){
-    effects_showStandby();
-    display_idle("OBEY");
-    effects_rearmCue();  // brief solid-green flash when re-armed
-    currentScene = Scene::Standby;
-    sceneStart   = millis();
-  }
-
-  static void enterFrankenHold(){
-    effects_startHold();
-    display_hold_init();
-
-    // Power external devices if wired
-    recorder_power(true);  // Tascam 5V relay on
-    gopro_power(true);     // GoPro 5V relay on
-    // If you prefer timed recording instead of just power, you can use:
-    // recorder_record_for(settings_ref().hold_ms + 500);
-    // gopro_record_for(settings_ref().hold_ms + 500);
-
-    currentScene = Scene::FrankenLab;
-    sceneStart   = millis();
-  }
-
-  static void enterFrankenCooldown(){
-    effects_endHold();
-    effects_startCooldown();
-    display_cooldown_init();
-
-    // Power down external devices during cooldown
-    recorder_power(false);
-    gopro_power(false);
-
-    currentScene = Scene::Cooldown;
-    sceneStart   = millis();
+static SceneFn map_code_to_fn(uint8_t code) {
+  switch (code) {
+    case 0:  return scene_standby;
+    case 1:  return scene_frankenphone; // FrankenLab
+    case 2:  return scene_mirror;
+    case 10: return scene_phoneLoading;
+    case 11: return scene_intro;
+    case 12: return scene_blood;
+    case 13: return scene_graveyard;
+    case 14: return scene_fur;
+    case 15: return scene_orca;        // Orca/Dino
+    case 16: return scene_frankenphone; // FrankenLab alias
+    case 17: return scene_mirror;       // MirrorRoom alias
+    case 18: return scene_exit;
+    default: return scene_standby;
   }
 }
 
-// --- Public API ---
-
-void scenes_begin(){
-  enterStandby();
+SceneFn scene_by_code(uint8_t code) {
+  return map_code_to_fn(code);
 }
 
-void scenes_set(Scene s){
-  switch(s){
-    case Scene::Standby:      enterStandby();         break;
-    case Scene::FrankenLab:   enterFrankenHold();     break;
-    case Scene::Cooldown:     enterFrankenCooldown(); break;
-    default: /* others TBD */ enterStandby();         break;
+SceneFn scene_by_enum(Scene s) {
+  return map_code_to_fn(static_cast<uint8_t>(s));
+}
+
+const char* scene_name(Scene s) {
+  switch (s) {
+    case Scene::Standby:       return "Standby";
+    case Scene::FrankenLab:    return "FrankenLab";
+    case Scene::MirrorRoom:    return "MirrorRoom";
+    case Scene::PhoneLoading:  return "PhoneLoading";
+    case Scene::IntroCue:      return "IntroCue";
+    case Scene::BloodRoom:     return "BloodRoom";
+    case Scene::Graveyard:     return "Graveyard";
+    case Scene::FurRoom:       return "FurRoom";
+    case Scene::OrcaDino:      return "OrcaDino";
+    case Scene::FrankenLabAlt: return "FrankenLab";
+    case Scene::MirrorRoomAlt: return "MirrorRoom";
+    case Scene::ExitHole:      return "ExitHole";
+    default:                   return "Unknown";
   }
 }
 
-void scenes_update(){
-  unsigned long now = millis();
-  auto& S = settings_ref();
-
-  switch(currentScene){
-    case Scene::Standby:
-      effects_showStandby();
-      break;
-
-    case Scene::FrankenLab: {
-      effects_updateHold();
-      display_hold_update();
-      if (now - sceneStart >= S.hold_ms){
-        scenes_set(Scene::Cooldown);
-      }
-    } break;
-
-    case Scene::Cooldown: {
-      effects_updateCooldown();
-      display_cooldown_update();
-      if (now - sceneStart >= S.cooldown_ms){
-        scenes_set(Scene::Standby);
-      }
-    } break;
-
-    default:
-      break;
+void scenes_set(Scene s) {
+  g_currentScene = scene_by_enum(s);
+  if (!g_currentScene) {
+    g_currentScene = scene_standby;
   }
-}
-
-Scene scenes_current(){
-  return currentScene;
-}
-
-const char* scenes_name(Scene s){
-  switch(s){
-    case Scene::Standby:     return "Standby";
-    case Scene::IntroCue:    return "IntroCue";
-    case Scene::BloodRoom:   return "BloodRoom";
-    case Scene::Graveyard:   return "Graveyard";
-    case Scene::FurRoom:     return "FurRoom";
-    case Scene::OrcaDino:    return "OrcaDino";
-    case Scene::FrankenLab:  return "FrankenLab";
-    case Scene::MirrorRoom:  return "MirrorRoom";
-    case Scene::ExitHole:    return "ExitHole";
-    case Scene::PhoneLoading:return "PhoneLoading";
-    case Scene::Cooldown:    return "Cooldown";
-    default:                 return "Unknown";
-  }
-}
-
-bool scenes_accepts_triggers(){
-  return (scenes_current() == Scene::Standby);
+  // Kick off the chosen scene immediately
+  g_currentScene();
 }

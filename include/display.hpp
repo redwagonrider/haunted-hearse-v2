@@ -17,3 +17,6 @@ void display_hold_update();  // call every loop tick (non-blocking)
 // Cooldown sequence (ACCESS GRANTED variants)
 void display_cooldown_init();
 void display_cooldown_update();
+
+// Runtime tick
+void display_update();       // <- this was missing!

@@ -1,247 +1,435 @@
-#include "scene_frankenphone.hpp"
-#include "../display.hpp"
-#include "../effects.hpp"
-#include "../console.hpp"
+// src/scenes/scene_frankenphone.cpp
+#include "scenes/scene_frankenphone.hpp"
+
+#include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_LEDBackpack.h>
-#include <Arduino.h>
 
-// ================== Pins (assumed globally defined) ==================
-extern const uint8_t PIN_MAGNET_CTRL;
-extern const uint8_t PIN_BUZZER;
-extern const uint8_t LED_ARMED;
-extern const uint8_t LED_HOLD;
-extern const uint8_t LED_COOLDOWN;
+#include "pins.hpp"
+#include "effects.hpp"
+#include "console.hpp"
+#include "display.hpp"
+#include "telemetry.hpp"
 
-// ================== Duration Settings ==================
-const unsigned long HOLD_MS     = 5000;
-const unsigned long COOLDOWN_MS = 20000;
+// ===== Beam lock =====
+#ifndef PIN_BEAM_0
+#error "PIN_BEAM_0 must be defined in include/pins.hpp"
+#endif
+#if PIN_BEAM_0 != 2
+#error "Frankenphones Lab is locked to Beam 0 on D2. Update include/pins.hpp if you must move it."
+#endif
 
-// ================== State Machine ==================
-enum PhaseState { IDLE = 0, HOLD, COOLDOWN };
-PhaseState state = IDLE;
-unsigned long tPhaseStart = 0;
+// ===== Timings =====
+static unsigned long HOLD_MS         = 5000;    // magnet on window
+static const unsigned long COOLDOWN_MS     = 20000;
+static const unsigned long TOTAL_SCENE_MS  = 25000;   // HOLD + COOLDOWN
+static const unsigned long TEL_HZ_MS       = 1000;
+static const unsigned long DEBOUNCE_MS     = 30;
 
-// ================== Display ==================
-Adafruit_AlphaNum4 alpha = Adafruit_AlphaNum4();
+// ===== I2C display =====
+static Adafruit_AlphaNum4 alpha4;
+static const uint8_t DISP_ADDR = 0x70;
+static const char IDLE_TEXT[5] = "OBEY";
 
-enum DispStage {
-  DISP_IDLE = 0, DISP_FLASH, DISP_SCROLL_TEXT, DISP_RANDOM16,
-  DISP_EXPIRY_DATE, DISP_PIN, DISP_AREA5, DISP_DONE
-};
-DispStage dispStage = DISP_IDLE;
-String dispScrollMsg;
-uint16_t dispScrollIndex = 0;
-unsigned long dispNextTick = 0;
-bool dispFlashOn = false;
-uint8_t dispFlashCount = 0;
+// Cooldown frames (cycles for full 20 s)
+static const char* GRANT_FRAMES[] = {"ACES","GRTD","OPEN","DONE"};
+static const uint8_t N_FRAMES = 4;
 
-// ================== LED Flicker ==================
-unsigned long ledRandDeadline = 0;
-int ledYellowPWM = 0;
+// ===== State =====
+enum RunState { ST_IDLE, ST_HOLD, ST_COOLDOWN };
+static RunState state = ST_IDLE;
+static unsigned long tStateStart = 0;  // phase start
+static unsigned long tSceneStart = 0;  // overall start
 
-// ================== Display Helpers ==================
-void alphaShow4(char a, char b, char c, char d) {
-  alpha.clear();
-  alpha.writeDigitAscii(0, a);
-  alpha.writeDigitAscii(1, b);
-  alpha.writeDigitAscii(2, c);
-  alpha.writeDigitAscii(3, d);
-  alpha.writeDisplay();
+// ===== Display sequence state (during HOLD) =====
+enum DispPhase { PH_SYSOVR, PH_DIGITS, PH_DONEFLASH, PH_DATE, PH_PIN, PH_DONE };
+static DispPhase dphase = PH_SYSOVR;
+
+static String digits16;     // 16 random digits
+static String yyMM;         // "YY/MM"
+static String pinStr;       // " PIN" + 3 digits (we right-pad)
+static unsigned long tScroll = 0;
+static uint16_t scrollDelay = 120;
+static int scrollIndex = 0;
+static String scrollBuf;
+
+static bool blinkOn = false;
+static uint8_t blinkCount = 0;
+static unsigned long tBlink = 0;
+
+// ===== Cooldown display state =====
+static bool cdFlashOn = false;
+static unsigned long cdTick = 0;
+static uint8_t cdFrame = 0;
+static const uint16_t FLASH_ON_MS = 220;
+static const uint16_t FLASH_OFF_MS = 180;
+
+// ===== LED animation helpers =====
+static unsigned long ledRandDeadline = 0;
+static int ledYellowPWM = 0;
+
+// ===== Magnet and buzzer =====
+static inline void magnetOn()  { digitalWrite(PIN_MAGNET_CTRL, HIGH); }
+static inline void magnetOff() { digitalWrite(PIN_MAGNET_CTRL, LOW);  }
+
+static bool gBuzzerOn = false;
+static inline void buzzerTone(uint16_t f) { tone(PIN_BUZZER, f); gBuzzerOn = true; }
+static inline void buzzerOff() { noTone(PIN_BUZZER); gBuzzerOn = false; }
+
+// ===== Beam with debounce (active LOW) =====
+static uint8_t beam_state = 0, beam_last = 0;
+static unsigned long tBeamChange = 0;
+static inline uint8_t beam_raw() { return digitalRead(PIN_BEAM_0) == LOW ? 1 : 0; }
+
+static void beam_update() {
+  uint8_t r = beam_raw();
+  if (r != beam_last) { beam_last = r; tBeamChange = millis(); }
+  if (millis() - tBeamChange >= DEBOUNCE_MS) beam_state = r;
 }
-void alphaShowString4(const String& s) {
-  alphaShow4(
-    (s.length() > 0) ? s[0] : ' ',
-    (s.length() > 1) ? s[1] : ' ',
-    (s.length() > 2) ? s[2] : ' ',
-    (s.length() > 3) ? s[3] : ' '
-  );
+static inline uint8_t beam_active() { return beam_state; }
+
+// ===== Telemetry helpers =====
+static const char* phase_name() {
+  switch (state) {
+    case ST_HOLD:      return "HOLD";
+    case ST_COOLDOWN:  return "COOLDOWN";
+    default:           return "IDLE";
+  }
 }
-void alphaScrollInit(const String& msg) {
-  dispScrollMsg = "    " + msg + "    ";
-  dispScrollIndex = 0;
-  dispNextTick = millis();
+static void tel_emit_now() {
+  uint8_t r=0,g=0,b=0; effects_getRGB(r,g,b);
+  HH::tel_emit("frankenphone", phase_name(),
+               beam_active(),
+               (digitalRead(PIN_MAGNET_CTRL)==HIGH)?1:0,
+               gBuzzerOn?1:0,
+               r,g,b);
 }
-bool alphaScrollStep() {
-  if (millis() < dispNextTick) return false;
-  if (dispScrollIndex + 4 > dispScrollMsg.length()) return true;
-  alphaShowString4(dispScrollMsg.substring(dispScrollIndex, dispScrollIndex + 4));
-  dispScrollIndex++;
-  dispNextTick = millis() + 180;
-  return false;
+static void tel_emit_transition(const char* newPhase) {
+  uint8_t r=0,g=0,b=0; effects_getRGB(r,g,b);
+  HH::tel_emit("frankenphone", newPhase ? newPhase : phase_name(),
+               beam_active(),
+               (digitalRead(PIN_MAGNET_CTRL)==HIGH)?1:0,
+               gBuzzerOn?1:0,
+               r,g,b);
 }
-String randomDigits(uint8_t n) {
-  String s; for (uint8_t i = 0; i < n; i++) s += char('0' + random(10));
+
+// ===== Alpha display helpers =====
+static void dispShow4(const char* s4) {
+  for (int i=0;i<4;i++) alpha4.writeDigitAscii(i, s4[i]);
+  alpha4.writeDisplay();
+}
+static void dispShowStr4(const String& s) {
+  char buf[5] = {' ',' ',' ',' ','\0'};
+  for (int i=0;i<4 && i<(int)s.length(); ++i) buf[i] = s[i];
+  dispShow4(buf);
+}
+static void dispClear() { alpha4.clear(); alpha4.writeDisplay(); }
+
+static String randomDigits(uint8_t n) {
+  String s; s.reserve(n);
+  for (uint8_t i=0;i<n;i++) s += char('0' + random(10));
   return s;
 }
-String randomFutureMMYY() {
+static String nearFutureYYslashMM() {
+  // random 1..18 months from a nominal "now" to create a near-future YY/MM
+  uint8_t addMonths = random(1, 19);
+  uint8_t nowMonth = 7;
+  uint16_t nowYear = 2025;
+  uint16_t y = nowYear + (nowMonth + addMonths - 1) / 12;
+  uint8_t  m = ((nowMonth - 1 + addMonths) % 12) + 1;
   char buf[6];
-  snprintf(buf, sizeof(buf), "%02u%02u", random(1, 13), random(26, 31));
+  snprintf(buf, sizeof(buf), "%02u/%02u", (uint8_t)(y % 100), m);
   return String(buf);
 }
 
-// ================== Display Sequence ==================
-void dispStartSequence() {
-  dispStage = DISP_FLASH;
-  dispFlashCount = 0;
-  dispFlashOn = false;
-  dispNextTick = millis();
-}
-void dispUpdate() {
-  if (dispStage == DISP_IDLE || dispStage == DISP_DONE) return;
-  unsigned long now = millis();
-
-  switch (dispStage) {
-    case DISP_FLASH:
-      if (now >= dispNextTick) {
-        dispFlashOn = !dispFlashOn;
-        alphaShow4(dispFlashOn ? '-' : ' ', dispFlashOn ? '-' : ' ',
-                   dispFlashOn ? '-' : ' ', dispFlashOn ? '-' : ' ');
-        dispNextTick = now + 150;
-        if (++dispFlashCount >= 12) {
-          alphaScrollInit("SECURING ENCRYPTED DATA");
-          dispStage = DISP_SCROLL_TEXT;
-        }
-      }
-      break;
-
-    case DISP_SCROLL_TEXT:
-      if (alphaScrollStep()) dispStage = DISP_RANDOM16;
-      break;
-
-    case DISP_RANDOM16: {
-      static String digits = randomDigits(16);
-      static uint8_t chunk = 0;
-      if (now >= dispNextTick) {
-        alphaShowString4(digits.substring(chunk * 4, (chunk + 1) * 4));
-        dispNextTick = now + 400;
-        if (++chunk >= 4) {
-          chunk = 0;
-          dispStage = DISP_EXPIRY_DATE;
-        }
-      }
-    } break;
-
-    case DISP_EXPIRY_DATE: {
-      static String mmyy = randomFutureMMYY();
-      static uint8_t sub = 0;
-      if (now >= dispNextTick) {
-        if (sub == 0) { alphaShowString4("DATE"); dispNextTick = now + 500; sub = 1; }
-        else if (sub == 1) { alphaShowString4(mmyy); dispNextTick = now + 700; sub = 2; }
-        else { sub = 0; dispStage = DISP_PIN; }
-      }
-    } break;
-
-    case DISP_PIN: {
-      static String pin3 = randomDigits(3);
-      static uint8_t sub = 0;
-      if (now >= dispNextTick) {
-        if (sub == 0) { alphaShowString4("PIN "); dispNextTick = now + 500; sub = 1; }
-        else if (sub == 1) { alphaShowString4(" " + pin3); dispNextTick = now + 700; sub = 2; }
-        else { sub = 0; dispStage = DISP_AREA5; }
-      }
-    } break;
-
-    case DISP_AREA5: {
-      static String zip = randomDigits(5);
-      static uint8_t sub = 0;
-      if (now >= dispNextTick) {
-        if (sub == 0) { alphaShowString4("AREA"); dispNextTick = now + 500; sub = 1; }
-        else if (sub == 1) { alphaShowString4(zip.substring(0, 4)); dispNextTick = now + 600; sub = 2; }
-        else if (sub == 2) { alphaShowString4(String(" ") + zip[4]); dispNextTick = now + 500; sub = 3; }
-        else { sub = 0; dispStage = DISP_DONE; }
-      }
-    } break;
-
-    default: break;
-  }
+// ===== LED animations (physical) + RGB for telemetry =====
+static void animateGreenArmed() {
+  unsigned long ms = millis();
+  const unsigned long period = 2400;
+  unsigned long t = ms % period;
+  int val = (t < period/2) ? map(t, 0, period/2, 30, 255)
+                           : map(t, period/2, period, 255, 30);
+  analogWrite(LED_ARMED, val);
+  analogWrite(LED_HOLD, 0);
+  analogWrite(LED_COOLDOWN, 0);
+  // Telemetry RGB
+  uint8_t g = map(val, 30, 255, 16, 96);
+  effects_setRGB(0, g, 0);
 }
 
-// ================== LED Animations ==================
-void animateRedHold(unsigned long t) {
-  const unsigned int PERIOD_SLOW = 300;
-  const unsigned int PERIOD_FAST = 40;
-  unsigned int period = PERIOD_SLOW - (t * (PERIOD_SLOW - PERIOD_FAST)) / HOLD_MS;
-  int brightness = 60 + (195L * t) / HOLD_MS;
+static void animateRedHold(unsigned long holdElapsed) {
+  const unsigned int PERIOD_SLOW_MS = 300;
+  const unsigned int PERIOD_FAST_MS = 40;
+  unsigned long clamped = (holdElapsed > HOLD_MS) ? HOLD_MS : holdElapsed;
+  unsigned int period = PERIOD_SLOW_MS
+      - (unsigned int)(((long)(PERIOD_SLOW_MS - PERIOD_FAST_MS) * (long)clamped) / (long)HOLD_MS);
+  int brightness = 60 + (int)((195L * (long)clamped) / (long)HOLD_MS);
   brightness = constrain(brightness, 0, 255);
-  bool on = (millis() % period) < (period * 45UL) / 100UL;
+  unsigned long phase = millis() % period;
+  bool on = (phase < (period * 45UL) / 100UL);
   analogWrite(LED_HOLD, on ? brightness : 0);
+  analogWrite(LED_ARMED, 0);
+  analogWrite(LED_COOLDOWN, 0);
+  // Telemetry RGB
+  uint8_t r = on ? map(brightness, 60, 255, 64, 255) : 32;
+  effects_setRGB(r, 32, 0);
 }
-void animateYellowCooldown() {
-  if (millis() >= ledRandDeadline) {
+
+static void animateYellowCooldown() {
+  unsigned long now = millis();
+  if (now >= ledRandDeadline) {
     ledYellowPWM = random(40, 255);
-    ledRandDeadline = millis() + random(20, 120);
+    unsigned long dwell = (unsigned long)random(20, 120);
+    ledRandDeadline = now + dwell;
     analogWrite(LED_COOLDOWN, ledYellowPWM);
   }
-}
-void animateGreenArmed() {
-  unsigned long t = millis() % 2400;
-  int val = (t < 1200) ? map(t, 0, 1200, 30, 255) : map(t, 1200, 2400, 255, 30);
-  analogWrite(LED_ARMED, val);
-}
-
-// ================== Sound + Control ==================
-inline void magnetOn()  { digitalWrite(PIN_MAGNET_CTRL, HIGH); }
-inline void magnetOff() { digitalWrite(PIN_MAGNET_CTRL, LOW); }
-inline void buzzerOff() { noTone(PIN_BUZZER); }
-void playModemSound(unsigned long t) {
-  if (t < 800UL) tone(PIN_BUZZER, 400 + (t * 1400) / 800UL);
-  else if (t < 1600UL) tone(PIN_BUZZER, 1800 - ((t - 800UL) * 1200) / 800UL);
-  else if (t < 3000UL) { if ((millis() & 0x07) == 0) tone(PIN_BUZZER, random(400, 2500)); }
-  else if (t < 4200UL) tone(PIN_BUZZER, ((millis() / 40) & 1) ? 1400 : 1800);
-  else if (t < HOLD_MS) tone(PIN_BUZZER, 1000);
-  else buzzerOff();
+  analogWrite(LED_ARMED, 0);
+  analogWrite(LED_HOLD, 0);
+  // Telemetry RGB
+  uint8_t y = map(ledYellowPWM, 40, 255, 64, 200);
+  effects_setRGB(y, y * 2 / 3, 0);
 }
 
-// ================== Public Scene API ==================
+// ===== Modem sound over full 25 s =====
+static void modemSound25s(unsigned long tSinceSceneStart) {
+  if (tSinceSceneStart < 300UL) buzzerTone(2400);
+  else if (tSinceSceneStart < 700UL) buzzerTone(((millis()/20)&1)?1200:2200);
+  else if (tSinceSceneStart < 1400UL) {
+    int f = 500 + (int)((tSinceSceneStart - 700) * (1600.0 / 700.0));
+    buzzerTone((uint16_t)f);
+  } else if (tSinceSceneStart < 2200UL) {
+    if ((millis() & 0x03) == 0) buzzerTone((uint16_t)random(600, 3000));
+  } else if (tSinceSceneStart < 3200UL) {
+    buzzerTone(((millis()/40)&1) ? 1300 : 1800);
+  } else if (tSinceSceneStart < HOLD_MS) {
+    buzzerTone(1000);
+  } else if (tSinceSceneStart < HOLD_MS + 15000UL) {
+    if ((millis() & 0x03) == 0) buzzerTone((uint16_t)random(800, 2200));
+  } else if (tSinceSceneStart < TOTAL_SCENE_MS - 3000UL) {
+    buzzerTone(((millis() / 80) & 1) ? 1200 : 2000);
+  } else if (tSinceSceneStart < TOTAL_SCENE_MS) {
+    buzzerTone(1000);
+  } else {
+    buzzerOff();
+  }
+}
+
+// ===== HOLD display program =====
+static void holdDisplayInit() {
+  dphase = PH_SYSOVR;
+  digits16 = randomDigits(16);
+  yyMM     = nearFutureYYslashMM();        // "YY/MM"
+  pinStr   = String(" ") + randomDigits(3); // display as " PIN" then " 123"
+
+  // Start scroll buffer with SYSTEM OVERRIDE
+  scrollBuf = "    SYSTEM OVERRIDE    ";
+  scrollDelay = 140;
+  scrollIndex = 0;
+  tScroll = 0;
+
+  blinkOn = false;
+  blinkCount = 0;
+  tBlink = 0;
+}
+
+static bool stepScroll() {
+  if (scrollIndex + 4 <= (int)scrollBuf.length()) {
+    dispShowStr4(scrollBuf.substring(scrollIndex, scrollIndex + 4));
+    scrollIndex++;
+    return false;
+  }
+  return true;
+}
+
+static void holdDisplayUpdate() {
+  unsigned long now = millis();
+  if (now - tScroll < scrollDelay) return;
+  tScroll = now;
+
+  switch (dphase) {
+    case PH_SYSOVR:
+      if (stepScroll()) {
+        // Show 16 digits by scrolling across
+        scrollBuf = String("    ") + digits16 + String("    ");
+        scrollDelay = 180;
+        scrollIndex = 0;
+        dphase = PH_DIGITS;
+      }
+      break;
+
+    case PH_DIGITS:
+      if (stepScroll()) {
+        dphase = PH_DONEFLASH;
+        blinkOn = false;
+        blinkCount = 0;
+        tBlink = now;
+      }
+      break;
+
+    case PH_DONEFLASH:
+      if (now - tBlink >= (blinkOn ? 150U : 150U)) {
+        tBlink = now;
+        blinkOn = !blinkOn;
+        dispShowStr4(blinkOn ? "DONE" : "    ");
+        if (++blinkCount >= 6) {
+          // Show YY/MM as a short scroll
+          scrollBuf = String("    ") + yyMM + String("    ");
+          scrollDelay = 140;
+          scrollIndex = 0;
+          dphase = PH_DATE;
+        }
+      }
+      break;
+
+    case PH_DATE:
+      if (stepScroll()) {
+        dphase = PH_PIN;
+        // Brief "PIN " then " 123"
+        dispShowStr4("PIN ");
+        tBlink = now + 240;
+        blinkCount = 0;
+      }
+      break;
+
+    case PH_PIN:
+      if (blinkCount == 0 && now >= tBlink) {
+        dispShowStr4(pinStr);  // " 123"
+        tBlink = now + 420;
+        blinkCount = 1;
+      } else if (blinkCount == 1 && now >= tBlink) {
+        dphase = PH_DONE;
+      }
+      break;
+
+    case PH_DONE:
+    default:
+      break;
+  }
+}
+
+// ===== COOLDOWN display =====
+static void cooldownDisplayStart() {
+  cdFlashOn = false;
+  cdTick = millis();
+  cdFrame = 0;
+  dispClear();
+}
+static void cooldownDisplayUpdate() {
+  unsigned long now = millis();
+  uint16_t dur = cdFlashOn ? FLASH_ON_MS : FLASH_OFF_MS;
+  if (now - cdTick >= dur) {
+    cdTick = now;
+    cdFlashOn = !cdFlashOn;
+    if (cdFlashOn) {
+      dispShow4(GRANT_FRAMES[cdFrame]);
+      cdFrame = (cdFrame + 1) % N_FRAMES;
+    } else {
+      dispClear();
+    }
+  }
+}
+
+// ===== Public API =====
 void frankenphone_init() {
-  Wire.begin();
-  alpha.begin(0x70);
-  alpha.setBrightness(10);
-  alpha.clear(); alpha.writeDisplay();
-  pinMode(PIN_MAGNET_CTRL, OUTPUT); magnetOff();
-  pinMode(PIN_BUZZER, OUTPUT); buzzerOff();
+  // Hardware
+  pinMode(PIN_BEAM_0, INPUT_PULLUP);
+  pinMode(PIN_MAGNET_CTRL, OUTPUT); digitalWrite(PIN_MAGNET_CTRL, LOW);
+  pinMode(PIN_BUZZER, OUTPUT);      buzzerOff();
   pinMode(LED_ARMED, OUTPUT);
   pinMode(LED_HOLD, OUTPUT);
   pinMode(LED_COOLDOWN, OUTPUT);
+
   randomSeed(analogRead(A0));
-  state = IDLE;
-  dispStage = DISP_IDLE;
+
+  // Display
+  Wire.begin();
+  alpha4.begin(DISP_ADDR);
+  alpha4.setBrightness(8);
+  dispShow4(IDLE_TEXT);
+
+  // Idle
+  state = ST_IDLE;
+  tStateStart = millis();
+  tSceneStart = 0;
+
+  console_log("Frankenphone: init idle");
 }
 
 void scene_frankenphone() {
-  tPhaseStart = millis();
-  state = HOLD;
+  // Start from IDLE on beam
+  tSceneStart = millis();
+  tStateStart = tSceneStart;
+  state = ST_HOLD;
+
   magnetOn();
-  dispStartSequence();
+  holdDisplayInit();
+
   console_log("Frankenphone: HOLD start");
+  tel_emit_transition("HOLD");
 }
 
 void frankenphone_update() {
   unsigned long now = millis();
 
-  if (state == HOLD) {
-    unsigned long elapsed = now - tPhaseStart;
-    playModemSound(elapsed);
-    animateRedHold(elapsed);
-    dispUpdate();
-    if (elapsed >= HOLD_MS) {
-      state = COOLDOWN;
-      tPhaseStart = now;
-      buzzerOff();
-      magnetOff();
-      console_log("Frankenphone: COOLDOWN start");
-    }
-  } else if (state == COOLDOWN) {
-    animateYellowCooldown();
-    dispUpdate();
-    if (now - tPhaseStart >= COOLDOWN_MS) {
-      state = IDLE;
-      dispStage = DISP_IDLE;
-      console_log("Frankenphone: rearmed");
-    }
-  } else if (state == IDLE) {
-    animateGreenArmed();
+  // Debounce beam
+  beam_update();
+
+  // 1 Hz telemetry
+  static unsigned long lastTel = 0;
+  if (now - lastTel >= TEL_HZ_MS) {
+    tel_emit_now();
+    lastTel = now;
   }
+
+  // Run modem sound across the whole 25 s when scene is active
+  if (state == ST_HOLD || state == ST_COOLDOWN) {
+    unsigned long tSinceScene = now - tSceneStart;
+    modemSound25s(tSinceScene);
+  } else {
+    buzzerOff();
+  }
+
+  switch (state) {
+    case ST_IDLE:
+      animateGreenArmed();
+      dispShow4(IDLE_TEXT);
+      if (beam_active()) {
+        scene_frankenphone();
+      }
+      break;
+
+    case ST_HOLD: {
+      unsigned long el = now - tStateStart;
+      animateRedHold(el);
+      holdDisplayUpdate();
+
+      if (el >= HOLD_MS) {
+        // Transition
+        magnetOff();
+        state = ST_COOLDOWN;
+        tStateStart = now;
+        cooldownDisplayStart();
+        console_log("Frankenphone: COOLDOWN start");
+        tel_emit_transition("COOLDOWN");
+      }
+    } break;
+
+    case ST_COOLDOWN:
+      animateYellowCooldown();
+      cooldownDisplayUpdate();
+
+      if (now - tStateStart >= COOLDOWN_MS) {
+        state = ST_IDLE;
+        tStateStart = now;
+        dispShow4(IDLE_TEXT);
+        buzzerOff();
+        console_log("Frankenphone: rearmed");
+        tel_emit_transition("IDLE");
+      }
+      break;
+  }
+
+  // small breather
+  delay(2);
 }

@@ -21,3 +21,5 @@ void inputs_setInvert(uint8_t idx, bool inverted);
 
 // Debug dump
 void inputs_printStatus(Stream& s);
+
+void inputs_init();

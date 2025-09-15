@@ -132,3 +132,7 @@ void inputs_printStatus(Stream& s){
   }
   s.print(F("debounce=")); s.print(DEBOUNCE_MS); s.print(F("ms, rearm=")); s.print(REARM_MS); s.println(F("ms"));
 }
+
+void inputs_init() {
+  // Optional: pinMode or setup logic here
+}

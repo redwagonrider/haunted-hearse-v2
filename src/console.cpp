@@ -281,3 +281,9 @@ void console_update(){
     Serial.println(F("ERR ? for help"));
   }
 }
+void console_log(const String& msg) {
+  if (console_should_log()) {
+    Serial.print(F("[LOG] "));
+    Serial.println(msg);
+  }
+}

@@ -52,3 +52,10 @@ void settings_set_beam_scene(uint8_t idx, uint8_t scene_code);
 
 // Pretty print
 void settings_print(Stream& s);
+
+#ifndef SETTINGS_HPP
+#define SETTINGS_HPP
+
+void settings_init();
+
+#endif

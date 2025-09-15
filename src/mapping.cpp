@@ -1,28 +1,39 @@
-#include <Arduino.h>
-#include "settings.hpp"
-#include "scenes.hpp"
+#include "mapping.hpp"
+#include "pins.hpp"
 
-// These are defined in src/main.cpp (our current design keeps them there)
-extern uint8_t BEAM_PINS[6];
-extern Scene   BEAM_SCENE[6];
+// If you have these headers, you can include them.
+// They are not required for the simple defaults here.
+// #include "settings.hpp"
+// #include "console.hpp"
+extern void scene_blood();
+extern void scene_graveyard();
+extern void scene_fur();
+extern void scene_orca();
+extern void scene_frankenphone();
+extern void scene_mirror();
 
-// Local helper: translate persisted scene code -> our minimal Scene enum
-static Scene codeToScene(uint8_t c){
-  // We currently implement only Standby (0) and FrankenLab (6).
-  // Other codes fallback to Standby to avoid crashes.
-  switch(c){
-    case 6: return Scene::FrankenLab;
-    case 0:
-    default: return Scene::Standby;
-  }
-}
+// Default pin map pulled from your README
+uint8_t BEAM_PINS[6] = {
+  PIN_BEAM_0, PIN_BEAM_1, PIN_BEAM_2, PIN_BEAM_3, PIN_BEAM_4, PIN_BEAM_5
+};
 
-// This function is referenced by other modules (e.g. console) after settings change.
-// Re-copy pins + scene mapping from EEPROM-backed settings into the runtime tables.
-void apply_mapping_from_settings(){
-  auto& S = settings_ref();
-  for (uint8_t i = 0; i < 6; ++i){
-    BEAM_PINS[i]  = S.beam_pins[i];
-    BEAM_SCENE[i] = codeToScene(S.beam_scene[i]);
-  }
+// Default scene map. Adjust as you like. This just makes the arrays valid.
+SceneFn BEAM_SCENE[6] = {
+  scene_frankenphone, // Beam 0
+  scene_blood,        // Beam 1
+  scene_graveyard,    // Beam 2
+  scene_fur,          // Beam 3
+  scene_orca,         // Beam 4
+  scene_mirror        // Beam 5
+};
+
+// If you keep a settings structure with beam pins and codes, wire it here.
+// For now we keep safe defaults so other modules can link cleanly.
+void apply_mapping_from_settings() {
+  // Example if you later add settings:
+  // const auto& S = settings_get();
+  // for (uint8_t i = 0; i < 6; i++) {
+  //   BEAM_PINS[i] = S.beam_pins[i];
+  //   BEAM_SCENE[i] = scene_by_code(S.beam_scene[i]);
+  // }
 }

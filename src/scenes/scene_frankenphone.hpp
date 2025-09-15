@@ -1,12 +1,10 @@
-#ifndef SCENE_FRANKENPHONE_HPP
-#define SCENE_FRANKENPHONE_HPP
+#pragma once
+#include <Arduino.h>
 
-void scene_frankenphone();  // Trigger entry point
-
-// Called once in setup
+// Public API for the Frankenphone scene
 void frankenphone_init();
+void scene_frankenphone();   // start the scene (enters HOLD)
+void frankenphone_update();  // call each loop
 
-// Called every frame in loop()
-void frankenphone_update();
-
-#endif
+// Helper for dashboards
+const char* frankenphone_phase_name();
