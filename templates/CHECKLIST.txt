@@ -1,0 +1,10 @@
+New Scene Checklist
+1. Duplicate templates and rename to your scene
+2. Register in src/scenes.cpp mapping and names
+3. Choose display owner string and priority
+4. Use display_acquire with finite hold_ms and renew if needed
+5. Use triggers_pulse_by_name for Pi events or relays
+6. Emit HH::tel_emit once per second or phase changes
+7. No long delays
+8. Build flash test monitor
+9. Commit push PR
